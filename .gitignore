@@ -1,0 +1,408 @@
+# AI-READI Stress Prediction Pipeline - Git Ignore File
+# =====================================================
+
+# Python
+# ------
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# PyInstaller
+*.manifest
+*.spec
+
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+.pytest_cache/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# IPython
+profile_default/
+ipython_config.py
+
+# pyenv
+.python-version
+
+# pipenv
+Pipfile.lock
+
+# PEP 582
+__pypackages__/
+
+# Celery stuff
+celerybeat-schedule
+celerybeat.pid
+
+# SageMath parsed files
+*.sage.py
+
+# Environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# Spyder project settings
+.spyderproject
+.spyproject
+
+# Rope project settings
+.ropeproject
+
+# mkdocs documentation
+/site
+
+# mypy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Pyre type checker
+.pyre/
+
+# Machine Learning & Data Science
+# ===============================
+
+# Model files
+*.pkl
+*.pickle
+*.joblib
+*.h5
+*.hdf5
+*.pb
+*.pth
+*.pt
+*.ckpt
+*.safetensors
+*.bin
+*.onnx
+*.tflite
+*.mlmodel
+
+# Data files (uncomment if you don't want to track data)
+# *.csv
+# *.tsv
+# *.json
+# *.jsonl
+# *.parquet
+# *.feather
+# *.arrow
+# *.xlsx
+# *.xls
+# *.db
+# *.sqlite
+# *.sqlite3
+
+# Large data directories
+AI-READI/*
+old/
+preprocess/__pycache__/
+
+# Preprocessed cache
+preprocessed_cache/
+*_cache/
+cache/
+.cache/
+
+# Output directories
+output/
+outputs/
+results/
+models/
+checkpoints/
+logs/
+plots/
+figures/
+visualizations/
+
+# Pipeline output directories
+stress_pipeline_output*/
+enhanced_preprocessing_output*/
+batch_preprocessing_output*/
+demo_enhanced_preprocessing*/
+preprocessing_output*/
+test_enhanced_preprocessing*/
+enhanced_pipeline_test*/
+
+# TensorBoard logs
+runs/
+tensorboard_logs/
+tb_logs/
+
+# Weights & Biases
+wandb/
+
+# MLflow
+mlruns/
+
+# DVC
+.dvc/
+.dvcignore
+
+# Data versioning
+data.dvc
+
+# Temporary files
+# ===============
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Windows
+*.tmp
+*.temp
+*.swp
+*.swo
+*~
+
+# Linux
+.fuse_hidden*
+.directory
+.Trash-*
+.nfs*
+
+# IDE and Editor files
+# ===================
+
+# VSCode
+.vscode/
+*.code-workspace
+
+# PyCharm
+.idea/
+*.iml
+*.ipr
+*.iws
+
+# Sublime Text
+*.sublime-project
+*.sublime-workspace
+
+# Vim
+*.swp
+*.swo
+*~
+
+# Emacs
+*~
+\#*\#
+/.emacs.desktop
+/.emacs.desktop.lock
+*.elc
+auto-save-list
+tramp
+.\#*
+
+# Atom
+.atom/
+
+# Eclipse
+.project
+.pydevproject
+.settings/
+
+# Spyder
+.spyderproject
+.spyproject
+
+# Project-specific ignores
+# ========================
+
+# Configuration files with sensitive data
+config.json
+secrets.json
+.env.local
+.env.production
+
+# Backup files
+*.bak
+*.backup
+*.old
+
+# Log files
+*.log
+logs/
+*.out
+*.err
+
+# Documentation build
+docs/_build/
+docs/build/
+
+# Package files
+*.tar.gz
+*.zip
+*.rar
+*.7z
+
+# Node.js (if using any JS tools)
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Docker
+.dockerignore
+Dockerfile
+docker-compose.yml
+docker-compose.yaml
+
+# Kubernetes
+*.yaml
+*.yml
+!requirements.yml
+
+# Terraform
+*.tfstate
+*.tfstate.*
+.terraform/
+
+# Ansible
+*.retry
+
+# Vagrant
+.vagrant/
+
+# Local development
+local/
+dev/
+development/
+
+# Testing
+test_results/
+test_output/
+.pytest_cache/
+
+# Profiling
+*.prof
+*.profile
+
+# Memory dumps
+*.dmp
+*.core
+
+# Archive files
+*.tar
+*.gz
+*.bz2
+*.xz
+*.zip
+*.rar
+*.7z
+
+# Temporary directories
+tmp/
+temp/
+temporary/
+
+# System files
+.fuse_hidden*
+.directory
+.Trash-*
+.nfs*
+
+# Custom project ignores
+# ======================
+
+# Add any project-specific files or directories to ignore below
+# Example:
+# my_custom_data/
+# experimental_code/
+# deprecated/
+
+# Keep important files
+# ===================
+!README.md
+!LICENSE
+!requirements.txt
+!setup.py
+!pyproject.toml
+!.gitignore
+!*.md
+!*.rst
+!*.txt
+!*.yml
+!*.yaml
+!Dockerfile
+!docker-compose.yml
+
+# Specific to this project
+# =======================
+
+# Training outputs
+training_history.json
+best_model.pt
+model_checkpoints/
+
+# Evaluation results
+window_level_metrics.json
+participant_level_metrics.json
+temporal_metrics.json
+subgroup_metrics.json
+
+# Preprocessing summaries
+preprocessing_summary.json
+
+# Cache directories
+*_cache/
+cache/
+.cache/
+
+# Large model files
+*.bin
+*.safetensors
+
+# Experiment tracking
+experiments/
+runs/
+wandb/
+mlruns/
+
+# Data processing outputs
+processed_data/
+intermediate_data/
