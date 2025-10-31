@@ -91,7 +91,7 @@ python main_pipeline.py \
     --epochs 100
 ```
 
-### Advanced Configuration
+### Advanced Configuration (1D CNN)
 
 ```python
 config = PipelineConfig(
@@ -104,8 +104,8 @@ config = PipelineConfig(
     stride_min=2,          # 2-minute stride
     sampling_rate=1.0,     # 1 Hz sampling
     
-    # Model parameters
-    model_type="transformer",  # or "cnn", "tcn", "multimodal"
+    # Model parameters (1D CNN)
+    model_type="cnn",
     hidden_dim=128,
     num_layers=3,
     dropout=0.2,

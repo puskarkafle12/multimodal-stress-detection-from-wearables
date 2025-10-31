@@ -118,14 +118,13 @@ class StressPredictionPipeline:
                     logger.warning(f"No streams found for participant {participant_id}")
                     continue
                 
-                synced_streams = self.data_ingestion.resample_and_sync_streams(streams, self.config.sampling_rate)
-                
-                if not synced_streams:
+                # Streams are already aligned by preprocessing; use directly
+                if not streams:
                     logger.warning(f"No synced streams for participant {participant_id}")
                     continue
-                
+
                 # Create windows
-                windows = self.windowing_system.create_windows(synced_streams, participant_id)
+                windows = self.windowing_system.create_windows(streams, participant_id)
                 
                 if windows:
                     all_windows.extend(windows)

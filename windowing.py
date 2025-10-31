@@ -118,9 +118,20 @@ class WindowingSystem:
             
             df = streams[modality]
             
-            # Extract window data
-            window_values = df['value'].iloc[start_idx:end_idx].values
-            window_masks = df['mask'].iloc[start_idx:end_idx].values
+            # Extract window data with padding if stream is shorter than window
+            available_len = len(df)
+            if end_idx <= available_len:
+                window_values = df['value'].iloc[start_idx:end_idx].values
+                window_masks = df['mask'].iloc[start_idx:end_idx].values
+            else:
+                # Compute overlap and pad the remainder with zeros
+                window_values = np.zeros(self.window_length_samples, dtype=np.float32)
+                window_masks = np.zeros(self.window_length_samples, dtype=np.float32)
+                if start_idx < available_len:
+                    overlap_end = min(end_idx, available_len)
+                    overlap_len = overlap_end - start_idx
+                    window_values[:overlap_len] = df['value'].iloc[start_idx:overlap_end].values
+                    window_masks[:overlap_len] = df['mask'].iloc[start_idx:overlap_end].values
             
             # Handle NaN values
             window_values = np.nan_to_num(window_values, nan=0.0)

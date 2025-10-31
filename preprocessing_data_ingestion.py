@@ -166,53 +166,9 @@ class PreprocessingDataIngestion:
             'mask': mask
         })
         
-        # Remove rows where mask is 0 (no data)
-        df = df[df['mask'] > 0].reset_index(drop=True)
+        # Keep all rows; downstream uses mask to handle missingness
+        df = df.reset_index(drop=True)
         
         return df if len(df) > 0 else None
     
-    def resample_and_sync_streams(self, streams: Dict[str, pd.DataFrame], fs: float) -> Dict[str, pd.DataFrame]:
-        """
-        Resample and synchronize all streams to common sampling rate
-        Note: This is simplified since preprocessing already handles resampling
-        """
-        if not streams:
-            return {}
-            
-        # Find common time range
-        all_timestamps = []
-        for df in streams.values():
-            if not df.empty:
-                all_timestamps.extend(df['timestamp'].tolist())
-        
-        if not all_timestamps:
-            return {}
-            
-        # Create common time grid
-        start_time = min(all_timestamps)
-        end_time = max(all_timestamps)
-        common_timestamps = pd.date_range(start=start_time, end=end_time, freq=f'{1/fs}S')
-        
-        # Resample each stream to common timestamps
-        synced_streams = {}
-        for modality, df in streams.items():
-            if df.empty:
-                continue
-                
-            # Set timestamp as index for resampling
-            df_indexed = df.set_index('timestamp')
-            
-            # Forward fill missing values and create mask
-            resampled_values = df_indexed['value'].reindex(common_timestamps, method='ffill')
-            resampled_masks = df_indexed['mask'].reindex(common_timestamps, method='ffill', fill_value=0)
-            
-            # Create synchronized DataFrame
-            synced_df = pd.DataFrame({
-                'timestamp': common_timestamps,
-                'value': resampled_values.values,
-                'mask': resampled_masks.values
-            })
-            
-            synced_streams[modality] = synced_df
-            
-        return synced_streams
+    # Removed: resample_and_sync_streams — preprocessing already aligns streams via interpolate_downsample_pad
