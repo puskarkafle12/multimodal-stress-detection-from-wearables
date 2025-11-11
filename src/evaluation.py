@@ -43,11 +43,27 @@ class StressEvaluator:
         Returns:
             Dictionary of window-level metrics
         """
-        # Regression metrics
+        # Regression metrics (as per TA discussion: RMSE, MSE, and explore more regression metrics)
         mae = mean_absolute_error(y_true, y_pred)
         mse = mean_squared_error(y_true, y_pred)
         rmse = np.sqrt(mse)
         r2 = r2_score(y_true, y_pred)
+        
+        # Additional regression metrics
+        # Mean Absolute Percentage Error (MAPE)
+        mape = np.mean(np.abs((y_true - y_pred) / (y_true + 1e-8))) * 100
+        
+        # Mean Bias Error (MBE)
+        mbe = np.mean(y_pred - y_true)
+        
+        # Root Mean Squared Log Error (RMSLE)
+        rmsle = np.sqrt(np.mean((np.log1p(y_true) - np.log1p(y_pred)) ** 2))
+        
+        # Explained Variance Score
+        explained_variance = 1 - np.var(y_true - y_pred) / np.var(y_true) if np.var(y_true) > 0 else 0
+        
+        # Median Absolute Error
+        median_ae = np.median(np.abs(y_true - y_pred))
         
         # Correlation metrics
         pearson_r, pearson_p = pearsonr(y_true, y_pred)
@@ -73,8 +89,13 @@ class StressEvaluator:
         return {
             'mae': mae,
             'mse': mse,
-            'rmse': rmse,
+            'rmse': rmse,  # Primary metric as per TA discussion
             'r2': r2,
+            'mape': mape,
+            'mbe': mbe,
+            'rmsle': rmsle,
+            'explained_variance': explained_variance,
+            'median_ae': median_ae,
             'pearson_r': pearson_r,
             'pearson_p': pearson_p,
             'spearman_r': spearman_r,

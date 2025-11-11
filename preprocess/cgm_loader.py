@@ -5,7 +5,7 @@ from datetime import datetime, timedelta
 
 cgm_high_value = 180.0
 cgm_low_value = 70.0
-len_cgm = 2856  # set based on your requirement
+len_cgm = 2880  # 2880 values = 10 days at 5-min intervals (as per TA requirements)
 """
 def pad_and_mask(values, seq_len):
     values = np.array(values, dtype=np.float32)

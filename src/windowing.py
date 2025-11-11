@@ -23,9 +23,11 @@ class WindowingSystem:
         self.sampling_rate = config.sampling_rate
         self.alignment_tolerance_min = config.alignment_tolerance_min
         
-        # Calculate window parameters
-        self.window_length_samples = int(self.window_length_min * self.sampling_rate * 60)  # samples
-        self.stride_samples = int(self.stride_min * self.sampling_rate * 60)  # samples
+        # Calculate window parameters - Updated for TA requirements
+        # 1 hour = 60 minutes = 12 samples at 5-min intervals
+        # sampling_rate = 1.0/5.0 (1 sample per 5 minutes)
+        self.window_length_samples = int(self.window_length_min / 5)  # 1 hour = 12 samples at 5-min intervals
+        self.stride_samples = int(self.stride_min / 5)  # stride in samples
         
     def create_windows(self, streams: Dict[str, pd.DataFrame], participant_id: str) -> List[Dict]:
         """
@@ -70,8 +72,8 @@ class WindowingSystem:
             if window_features is None:
                 continue
             
-            # Align stress label
-            stress_label = self._align_stress_label(streams, window_center_time)
+            # Align stress label - compute average stress value within the 1-hour window (as per TA discussion)
+            stress_label = self._align_stress_label_window(streams, start_idx, end_idx)
             
             if stress_label is not None:
                 window_data = {
@@ -104,9 +106,9 @@ class WindowingSystem:
         feature_names = []
         
         # Define modality order for consistent feature ordering
+        # 5 signals as per TA discussion: heart_rate, sleep, cgm, oxygen_saturation, respiratory_rate
         modality_order = [
-            'heart_rate', 'oxygen_saturation', 'respiratory_rate', 
-            'physical_activity', 'physical_activity_calorie', 'sleep', 'cgm'
+            'heart_rate', 'sleep', 'cgm', 'oxygen_saturation', 'respiratory_rate'
         ]
         
         for modality in modality_order:
@@ -149,9 +151,52 @@ class WindowingSystem:
         
         return feature_tensor
     
+    def _align_stress_label_window(self, streams: Dict[str, pd.DataFrame], start_idx: int, end_idx: int) -> Optional[float]:
+        """
+        Compute average stress label within the 1-hour window (as per TA discussion)
+        
+        Args:
+            streams: Synchronized modality streams
+            start_idx: Start index for window
+            end_idx: End index for window
+            
+        Returns:
+            Average stress value within the window or None if no valid labels found
+        """
+        if 'stress' not in streams:
+            return None
+        
+        stress_df = streams['stress']
+        
+        # Extract stress values within the window
+        available_len = len(stress_df)
+        if end_idx <= available_len:
+            window_values = stress_df['value'].iloc[start_idx:end_idx].values
+            window_masks = stress_df['mask'].iloc[start_idx:end_idx].values
+        else:
+            # Handle case where window extends beyond available data
+            if start_idx < available_len:
+                overlap_end = min(end_idx, available_len)
+                window_values = stress_df['value'].iloc[start_idx:overlap_end].values
+                window_masks = stress_df['mask'].iloc[start_idx:overlap_end].values
+            else:
+                return None
+        
+        # Filter to only valid values (mask = 1)
+        valid_mask = window_masks == 1
+        if np.sum(valid_mask) == 0:
+            return None
+        
+        valid_values = window_values[valid_mask]
+        
+        # Compute average stress value within the window
+        avg_stress = np.mean(valid_values)
+        
+        return float(avg_stress)
+    
     def _align_stress_label(self, streams: Dict[str, pd.DataFrame], window_center_time: pd.Timestamp) -> Optional[float]:
         """
-        Align stress label to window center time
+        Align stress label to window center time (legacy method - kept for compatibility)
         
         Args:
             streams: Synchronized modality streams

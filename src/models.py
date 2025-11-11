@@ -101,8 +101,11 @@ class StressCNN(nn.Module):
         # Global pooling
         self.global_pool = nn.AdaptiveAvgPool1d(1)
         
-        # Output layer
-        self.fc = nn.Linear(hidden_dim, 1)
+        # Improved output layer with intermediate layer for better capacity
+        self.fc1 = nn.Linear(hidden_dim, hidden_dim // 2)
+        self.fc1_bn = nn.BatchNorm1d(hidden_dim // 2)
+        self.fc1_dropout = nn.Dropout(dropout * 0.5)
+        self.fc2 = nn.Linear(hidden_dim // 2, 1)
         
     def forward(self, x):
         # x shape: [batch_size, window_length, input_dim]
@@ -117,8 +120,12 @@ class StressCNN(nn.Module):
         x = self.global_pool(x)  # [batch_size, hidden_dim, 1]
         x = x.squeeze(-1)  # [batch_size, hidden_dim]
         
-        # Output
-        x = self.fc(x)  # [batch_size, 1]
+        # Improved output layers
+        x = self.fc1(x)  # [batch_size, hidden_dim // 2]
+        x = self.fc1_bn(x)  # Batch norm on 1D
+        x = F.relu(x)
+        x = self.fc1_dropout(x)
+        x = self.fc2(x)  # [batch_size, 1]
         
         return x
 
@@ -170,6 +177,58 @@ class StressTCN(nn.Module):
         
         # Output
         x = self.fc(x)  # [batch_size, 1]
+        
+        return x
+
+class StressLSTM(nn.Module):
+    """LSTM model for stress prediction (as per TA discussion)"""
+    
+    def __init__(self, input_dim: int, hidden_dim: int = 128, num_layers: int = 2,
+                 dropout: float = 0.2, bidirectional: bool = False):
+        super().__init__()
+        
+        self.input_dim = input_dim
+        self.hidden_dim = hidden_dim
+        self.num_layers = num_layers
+        
+        # Input projection
+        self.input_proj = nn.Linear(input_dim, hidden_dim)
+        
+        # LSTM layers
+        self.lstm = nn.LSTM(
+            input_size=hidden_dim,
+            hidden_size=hidden_dim,
+            num_layers=num_layers,
+            dropout=dropout if num_layers > 1 else 0,
+            bidirectional=bidirectional,
+            batch_first=True
+        )
+        
+        # Output dimension (2x if bidirectional)
+        lstm_output_dim = hidden_dim * 2 if bidirectional else hidden_dim
+        
+        # Output layer
+        self.fc = nn.Linear(lstm_output_dim, 1)
+        
+    def forward(self, x):
+        # x shape: [batch_size, window_length, input_dim]
+        # Input projection
+        x = self.input_proj(x)  # [batch_size, window_length, hidden_dim]
+        
+        # LSTM forward pass
+        lstm_out, (h_n, c_n) = self.lstm(x)  # [batch_size, window_length, hidden_dim]
+        
+        # Use the last hidden state
+        # If bidirectional, concatenate forward and backward hidden states
+        if self.lstm.bidirectional:
+            forward_hidden = h_n[-2, :, :]  # Last forward hidden state
+            backward_hidden = h_n[-1, :, :]  # Last backward hidden state
+            final_hidden = torch.cat([forward_hidden, backward_hidden], dim=1)
+        else:
+            final_hidden = h_n[-1, :, :]  # Last hidden state
+        
+        # Output
+        x = self.fc(final_hidden)  # [batch_size, 1]
         
         return x
 
@@ -255,8 +314,202 @@ class ModalityEncoder(nn.Module):
         x = self.encoder(x)  # [batch_size, hidden_dim, 1]
         return x.squeeze(-1)  # [batch_size, hidden_dim]
 
+class ModalityCNNEncoder(nn.Module):
+    """CNN encoder that returns embedding before final FC layer (for late fusion)"""
+    
+    def __init__(self, input_dim: int, hidden_dim: int = 64, num_layers: int = 2, dropout: float = 0.2, window_length: int = 12):
+        super().__init__()
+        
+        self.input_dim = input_dim
+        self.hidden_dim = hidden_dim
+        self.window_length = window_length
+        
+        # Convolutional layers
+        self.conv_layers = nn.ModuleList()
+        
+        # First layer
+        self.conv_layers.append(nn.Conv1d(input_dim, hidden_dim, kernel_size=3, padding=1))
+        
+        # Additional layers
+        for _ in range(num_layers - 1):
+            self.conv_layers.append(nn.Conv1d(hidden_dim, hidden_dim, kernel_size=3, padding=1))
+        
+        # Batch normalization and dropout
+        self.batch_norms = nn.ModuleList([nn.BatchNorm1d(hidden_dim) for _ in range(num_layers)])
+        self.dropouts = nn.ModuleList([nn.Dropout(dropout) for _ in range(num_layers)])
+        
+        # Global pooling
+        self.global_pool = nn.AdaptiveAvgPool1d(1)
+        
+    def forward(self, x):
+        # x shape: [batch_size, window_length, input_dim]
+        x = x.transpose(1, 2)  # [batch_size, input_dim, window_length]
+        
+        # Apply convolutional layers
+        for conv, bn, dropout in zip(self.conv_layers, self.batch_norms, self.dropouts):
+            x = F.relu(bn(conv(x)))
+            x = dropout(x)
+        
+        # Global pooling
+        x = self.global_pool(x)  # [batch_size, hidden_dim, 1]
+        x = x.squeeze(-1)  # [batch_size, hidden_dim]
+        
+        return x  # Return embedding without final FC layer
+
+class EarlyFusionModel(nn.Module):
+    """Early fusion model: V1+V2+..V5 -> model (as per TA discussion)"""
+    
+    def __init__(self, input_dim: int, hidden_dim: int = 128, num_layers: int = 3,
+                 dropout: float = 0.2, window_length: int = 12):
+        super().__init__()
+        
+        self.input_dim = input_dim  # Should be 5 signals * 2 (value + mask) = 10
+        self.hidden_dim = hidden_dim
+        self.window_length = window_length
+        
+        # Shared encoder (treats all signals as one input)
+        self.encoder = StressCNN(
+            input_dim=input_dim,
+            hidden_dim=hidden_dim,
+            num_layers=num_layers,
+            dropout=dropout,
+            window_length=window_length
+        )
+        
+    def forward(self, x):
+        # x shape: [batch_size, window_length, input_dim]
+        # Input already contains all 5 signals concatenated
+        return self.encoder(x)
+
+class AttentionFusion(nn.Module):
+    """Attention-based fusion for late fusion (as per TA discussion)"""
+    
+    def __init__(self, hidden_dim: int, num_modalities: int, dropout: float = 0.2):
+        super().__init__()
+        
+        self.hidden_dim = hidden_dim
+        self.num_modalities = num_modalities
+        
+        # Attention mechanism
+        self.query = nn.Linear(hidden_dim, hidden_dim)
+        self.key = nn.Linear(hidden_dim, hidden_dim)
+        self.value = nn.Linear(hidden_dim, hidden_dim)
+        self.dropout = nn.Dropout(dropout)
+        
+        # Output projection
+        self.output_proj = nn.Linear(hidden_dim, hidden_dim)
+        
+    def forward(self, modality_embeddings: List[torch.Tensor]) -> torch.Tensor:
+        """
+        Args:
+            modality_embeddings: List of tensors, each of shape [batch_size, hidden_dim]
+        
+        Returns:
+            Fused embedding of shape [batch_size, hidden_dim]
+        """
+        # Stack embeddings: [batch_size, num_modalities, hidden_dim]
+        stacked = torch.stack(modality_embeddings, dim=1)
+        batch_size = stacked.size(0)
+        
+        # Compute attention
+        query = self.query(stacked.mean(dim=1))  # [batch_size, hidden_dim]
+        query = query.unsqueeze(1)  # [batch_size, 1, hidden_dim]
+        
+        key = self.key(stacked)  # [batch_size, num_modalities, hidden_dim]
+        value = self.value(stacked)  # [batch_size, num_modalities, hidden_dim]
+        
+        # Attention scores
+        scores = torch.bmm(query, key.transpose(1, 2)) / (self.hidden_dim ** 0.5)  # [batch_size, 1, num_modalities]
+        attn_weights = F.softmax(scores, dim=-1)
+        attn_weights = self.dropout(attn_weights)
+        
+        # Weighted sum
+        fused = torch.bmm(attn_weights, value)  # [batch_size, 1, hidden_dim]
+        fused = fused.squeeze(1)  # [batch_size, hidden_dim]
+        
+        # Output projection
+        fused = self.output_proj(fused)
+        
+        return fused
+
+class LateFusionModel(nn.Module):
+    """Late fusion model: V1->model->h1, v2->model->h2 separately, fuse h1_h2…h5 (as per TA discussion)"""
+    
+    def __init__(self, modality_dims: Dict[str, int], hidden_dim: int = 64,
+                 fusion_dim: int = 128, dropout: float = 0.2, window_length: int = 12,
+                 fusion_type: str = "attention"):  # "attention" or "concatenate"
+        super().__init__()
+        
+        self.modality_dims = modality_dims
+        self.fusion_type = fusion_type
+        
+        # Individual modality encoders (each signal gets its own encoder)
+        self.modality_encoders = nn.ModuleDict()
+        for modality, dim in modality_dims.items():
+            # Use CNN encoder for each modality (returns embedding before FC layer)
+            self.modality_encoders[modality] = ModalityCNNEncoder(
+                input_dim=dim,
+                hidden_dim=hidden_dim,
+                num_layers=2,
+                dropout=dropout,
+                window_length=window_length
+            )
+        
+        # Fusion layer
+        if fusion_type == "attention":
+            self.fusion = AttentionFusion(hidden_dim, len(modality_dims), dropout)
+            fusion_input_dim = hidden_dim
+        else:  # concatenate
+            fusion_input_dim = len(modality_dims) * hidden_dim
+            self.fusion = nn.Sequential(
+                nn.Linear(fusion_input_dim, fusion_dim),
+                nn.ReLU(),
+                nn.Dropout(dropout),
+                nn.Linear(fusion_dim, fusion_dim // 2),
+                nn.ReLU(),
+                nn.Dropout(dropout)
+            )
+            fusion_input_dim = fusion_dim // 2
+        
+        # Output layer
+        if fusion_type == "attention":
+            self.fc = nn.Linear(hidden_dim, 1)
+        else:
+            self.fc = nn.Linear(fusion_dim // 2, 1)
+        
+    def forward(self, x_dict: Dict[str, torch.Tensor]):
+        # Encode each modality separately
+        modality_embeddings = []
+        for modality, x in x_dict.items():
+            if modality in self.modality_encoders:
+                # Get embedding from the CNN encoder (returns embedding before FC layer)
+                embedding = self.modality_encoders[modality](x)  # [batch_size, hidden_dim]
+                modality_embeddings.append(embedding)
+        
+        if not modality_embeddings:
+            # Handle case where no modalities are available
+            batch_size = next(iter(x_dict.values())).size(0)
+            device = next(iter(x_dict.values())).device
+            if self.fusion_type == "attention":
+                fused = torch.zeros(batch_size, self.fc.in_features).to(device)
+            else:
+                fused = torch.zeros(batch_size, self.fc.in_features).to(device)
+        else:
+            # Fuse embeddings
+            if self.fusion_type == "attention":
+                fused = self.fusion(modality_embeddings)
+            else:
+                # Concatenate embeddings
+                fused = torch.cat(modality_embeddings, dim=1)
+                fused = self.fusion(fused)
+        
+        # Output
+        output = self.fc(fused)
+        
+        return output
+
 class MultimodalStressModel(nn.Module):
-    """Multimodal model with separate encoders for each modality"""
+    """Multimodal model with separate encoders for each modality (legacy - kept for compatibility)"""
     
     def __init__(self, modality_dims: Dict[str, int], hidden_dim: int = 64,
                  fusion_dim: int = 128, dropout: float = 0.2):
@@ -329,13 +582,49 @@ class ModelFactory:
                 dropout=config.dropout
             )
         
+        elif model_type == "lstm":
+            return StressLSTM(
+                input_dim=input_dim,
+                hidden_dim=config.hidden_dim,
+                num_layers=config.num_layers,
+                dropout=config.dropout
+            )
+        
         elif model_type == "transformer":
             return StressTransformer(
                 input_dim=input_dim,
                 hidden_dim=config.hidden_dim,
                 num_layers=config.num_layers,
                 dropout=config.dropout,
-                window_length=int(config.window_length_min * config.sampling_rate * 60)
+                window_length=int(config.window_length_min / 5)  # 1 hour = 12 samples at 5-min intervals
+            )
+        
+        elif model_type == "early_fusion":
+            # Early fusion: all 5 signals concatenated (10 features: 5 signals * 2 channels each)
+            return EarlyFusionModel(
+                input_dim=input_dim,
+                hidden_dim=config.hidden_dim,
+                num_layers=config.num_layers,
+                dropout=config.dropout,
+                window_length=int(config.window_length_min / 5)  # 1 hour = 12 samples
+            )
+        
+        elif model_type == "late_fusion":
+            # Late fusion: 5 signals with separate encoders, then fuse
+            modality_dims = {
+                'heart_rate': 2,  # value + mask
+                'sleep': 2,
+                'cgm': 2,
+                'oxygen_saturation': 2,
+                'respiratory_rate': 2
+            }
+            return LateFusionModel(
+                modality_dims=modality_dims,
+                hidden_dim=config.hidden_dim // 2,
+                fusion_dim=config.hidden_dim,
+                dropout=config.dropout,
+                window_length=int(config.window_length_min / 5),  # 1 hour = 12 samples
+                fusion_type="attention"  # or "concatenate"
             )
         
         elif model_type == "multimodal":

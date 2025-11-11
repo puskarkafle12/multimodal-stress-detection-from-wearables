@@ -3,15 +3,15 @@ import json
 import numpy as np
 from datetime import datetime
 
-# Set the max length per modality
-len_calories = 1895
-len_sleep = 403
-len_oxygen_saturation = 2411
+# Set the max length per modality - Updated for TA requirements (2880 = 10 days at 5-min intervals)
+len_calories = 2880
+len_sleep = 2880
+len_oxygen_saturation = 2880
 
-len_heart_rate = 3000
-len_stress = 3000
-len_respiratory_rate = 3000
-len_activity = 3000
+len_heart_rate = 2880  # 2880 values = 10 days at 5-min intervals
+len_stress = 2880
+len_respiratory_rate = 2880
+len_activity = 2880
 
 
 def interpolate_downsample_pad(times, values, target_len, freq='5min'):
