@@ -111,16 +111,22 @@ class StressCNN(nn.Module):
         # x shape: [batch_size, window_length, input_dim]
         x = x.transpose(1, 2)  # [batch_size, input_dim, window_length]
         
-        # Apply convolutional layers
-        for conv, bn, dropout in zip(self.conv_layers, self.batch_norms, self.dropouts):
-            x = F.relu(bn(conv(x)))
+        # Apply convolutional layers with residual connections for better gradient flow
+        for i, (conv, bn, dropout) in enumerate(zip(self.conv_layers, self.batch_norms, self.dropouts)):
+            residual = x if i > 0 and x.shape[1] == self.hidden_dim else None
+            x = conv(x)
+            x = bn(x)
+            x = F.relu(x)
+            # Add residual connection if dimensions match
+            if residual is not None:
+                x = x + residual  # Residual connection
             x = dropout(x)
         
         # Global pooling
         x = self.global_pool(x)  # [batch_size, hidden_dim, 1]
         x = x.squeeze(-1)  # [batch_size, hidden_dim]
         
-        # Improved output layers
+        # Improved output layers with deeper FC network
         x = self.fc1(x)  # [batch_size, hidden_dim // 2]
         x = self.fc1_bn(x)  # Batch norm on 1D
         x = F.relu(x)

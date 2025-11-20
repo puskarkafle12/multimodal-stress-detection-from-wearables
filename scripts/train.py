@@ -49,20 +49,21 @@ class ImprovedStressTrainerV2:
         self.output_dir = Path(output_dir)
         self.label_scaler = label_scaler
         
-        # Improved optimizer with increased weight decay for better regularization
+        # Improved optimizer with moderate weight decay
         self.optimizer = torch.optim.Adam(
             model.parameters(), 
             lr=config.learning_rate,
-            weight_decay=8e-4  # Increased weight decay for better regularization
+            weight_decay=5e-4  # Moderate weight decay
         )
         
-        # Learning rate scheduler - more gradual
+        # Learning rate scheduler - more aggressive reduction
         self.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-            self.optimizer, mode='min', factor=0.7, patience=10, min_lr=1e-6
+            self.optimizer, mode='min', factor=0.5, patience=8, min_lr=1e-7
         )
         
-        # MSE loss (simpler, works well with normalized data)
-        self.criterion = nn.MSELoss()
+        # Huber loss - less sensitive to outliers, better for regression
+        # Combines benefits of MSE (for small errors) and MAE (for large errors)
+        self.criterion = nn.HuberLoss(delta=1.0)
         
         # Early stopping with more patience
         self.early_stopping = self._create_early_stopping(config.early_stopping_patience)
@@ -71,7 +72,7 @@ class ImprovedStressTrainerV2:
         self.model.to(self.device)
         
         logger.info(f"Improved trainer V2 initialized on {self.device}")
-        logger.info(f"Using MSE loss, weight decay: 5e-4")
+        logger.info(f"Using Huber loss (delta=1.0), weight decay: 5e-4")
     
     def _create_early_stopping(self, patience):
         """Create early stopping callback"""
@@ -186,16 +187,16 @@ def main():
         window_length_min=60,
         stride_min=60,
         
-        # Improved hyperparameters for better generalization (reduced overfitting)
-        batch_size=128,  # Larger batch for more stable gradient estimates
-        num_epochs=200,  # More epochs
-        early_stopping_patience=20,  # Increased patience
-        learning_rate=0.0005,  # Lower LR for more stable training
+        # Improved hyperparameters for better accuracy (reduced RMSE/MAE)
+        batch_size=64,  # Smaller batch for better gradient estimates
+        num_epochs=300,  # More epochs for better convergence
+        early_stopping_patience=30,  # More patience
+        learning_rate=0.001,  # Higher initial LR for faster learning
         
-        # Reduced model capacity with stronger regularization
-        hidden_dim=128,  # Reduced capacity for better generalization
-        num_layers=4,  # Fewer layers to reduce overfitting
-        dropout=0.5,  # Higher dropout for stronger regularization
+        # Increased model capacity for better accuracy
+        hidden_dim=256,  # Larger capacity for better learning
+        num_layers=6,  # More layers for better feature extraction
+        dropout=0.3,  # Reduced dropout to allow more learning
     )
     
     # Set the fixed cache directory in config
@@ -224,13 +225,13 @@ def main():
     logger.info("\n" + "=" * 80)
     logger.info("IMPROVED CONFIGURATION V2")
     logger.info("=" * 80)
-    logger.info(f"Dropout: {config.dropout} (high for better generalization)")
-    logger.info(f"Batch Size: {config.batch_size} (larger for stability)")
-    logger.info(f"Learning Rate: {config.learning_rate} (lower for better generalization)")
-    logger.info(f"Weight Decay: 1e-3 (strong regularization)")
-    logger.info(f"Loss: MSE Loss")
-    logger.info(f"Hidden Dim: {config.hidden_dim} (reduced capacity)")
-    logger.info(f"Num Layers: {config.num_layers} (fewer layers)")
+    logger.info(f"Dropout: {config.dropout} (reduced for better learning)")
+    logger.info(f"Batch Size: {config.batch_size} (optimized for accuracy)")
+    logger.info(f"Learning Rate: {config.learning_rate} (higher for faster learning)")
+    logger.info(f"Weight Decay: 5e-4 (moderate regularization)")
+    logger.info(f"Loss: Huber Loss (better for regression, less sensitive to outliers)")
+    logger.info(f"Hidden Dim: {config.hidden_dim} (increased capacity)")
+    logger.info(f"Num Layers: {config.num_layers} (more layers for better features)")
     logger.info(f"Epochs: {config.num_epochs} (with early stopping)")
     logger.info(f"Early Stopping Patience: {config.early_stopping_patience}")
     logger.info(f"Label Normalization: Enabled")
@@ -362,7 +363,7 @@ def main():
             loss.backward()
             
             # Gradient clipping
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=2.0)  # Less aggressive clipping for larger model
             
             trainer.optimizer.step()
             
