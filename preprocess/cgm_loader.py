@@ -48,12 +48,25 @@ def downsample_by_averaging(values, target_len):
 """
 
 def interpolate_downsample_pad(times, values, target_len, freq='5min'):
-    if not times:
-        return np.zeros(target_len), np.zeros(target_len)
+    """Interpolate, downsample, and pad time series data"""
+    if not times or not values:
+        return np.zeros(target_len, dtype=np.float32), np.zeros(target_len, dtype=np.float32)
+
+    # Ensure values are numpy array and handle any remaining invalid values
+    values = np.array(values, dtype=np.float32)
+    times = np.array(times)
+    
+    # Remove any NaN or inf values
+    valid_mask = np.isfinite(values)
+    if np.sum(valid_mask) == 0:
+        return np.zeros(target_len, dtype=np.float32), np.zeros(target_len, dtype=np.float32)
+    
+    times = times[valid_mask]
+    values = values[valid_mask]
 
     # 1. Interpolation on uniform timeline
     start_time = min(times)
-    full_times = pd.date_range(start=start_time, periods=len(times), freq=freq)
+    full_times = pd.date_range(start=start_time, periods=max(len(times), target_len), freq=freq)
     series = pd.Series(np.nan, index=full_times)
 
     for ts, val in zip(times, values):
@@ -63,25 +76,35 @@ def interpolate_downsample_pad(times, values, target_len, freq='5min'):
             closest_idx = np.argmin(np.abs(series.index - ts))
             series.iloc[closest_idx] = val
 
-    series = series.interpolate(method='linear').fillna(method='bfill').fillna(method='ffill')
+    # Create mask before interpolation
     mask = (~series.isna()).astype(np.float32)
+    
+    # Interpolate missing values
+    series = series.interpolate(method='linear', limit_direction='both')
+    # Fill remaining NaNs at boundaries
+    series = series.fillna(method='bfill').fillna(method='ffill')
+    
+    # If still NaN, fill with 0
+    series = series.fillna(0.0)
 
     # 2. Downsample if needed
     if len(series) > target_len:
         factor = len(series) // target_len
-        series = series[:factor * target_len].values.reshape(-1, factor).mean(axis=1)
-        mask = mask[:factor * target_len].values.reshape(-1, factor).mean(axis=1)
+        series_values = series[:factor * target_len].values.reshape(-1, factor).mean(axis=1)
+        mask_values = mask[:factor * target_len].values.reshape(-1, factor).mean(axis=1)
+        # Ensure mask is binary after averaging
+        mask_values = (mask_values > 0.5).astype(np.float32)
     else:
-        series = series.values
-        mask = mask.values
+        series_values = series.values
+        mask_values = mask.values
 
     # 3. Pad if needed
-    if len(series) < target_len:
-        pad_len = target_len - len(series)
-        series = np.pad(series, (0, pad_len), constant_values=0.0)
-        mask = np.pad(mask, (0, pad_len), constant_values=0.0)
+    if len(series_values) < target_len:
+        pad_len = target_len - len(series_values)
+        series_values = np.pad(series_values, (0, pad_len), constant_values=0.0)
+        mask_values = np.pad(mask_values, (0, pad_len), constant_values=0.0)
 
-    return series, mask
+    return series_values.astype(np.float32), mask_values.astype(np.float32)
 
 # ====== CGM ======
 def load_cgm(json_path, target_len=len_cgm):
@@ -98,9 +121,15 @@ def load_cgm(json_path, target_len=len_cgm):
             elif val == 'Low':
                 val = cgm_low_value
             else:
-                val = float(val)
+                try:
+                    val = float(val)
+                    # Filter invalid values (should be 40-400 mg/dL)
+                    if val < 40 or val > 400:
+                        continue
+                except (ValueError, TypeError):
+                    continue
             times.append(datetime.fromisoformat(ts.replace('Z', '+00:00')))
             values.append(val)
         return interpolate_downsample_pad(times, values, target_len)
-    except:
-        return np.zeros(target_len), np.zeros(target_len)
+    except Exception as e:
+        return np.zeros(target_len, dtype=np.float32), np.zeros(target_len, dtype=np.float32)

@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Dict, List, Tuple, Optional
 from datetime import datetime
 import pickle
+import hashlib
 
 # Add preprocess folder to path
 preprocess_path = Path(__file__).parent.parent / "preprocess"
@@ -79,6 +80,11 @@ class EnhancedPreprocessingDataIngestion:
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         logger.info(f"Using cache directory: {self.cache_dir}")
         
+        # Cache version - changes when preprocessing code changes
+        # This ensures old cache is invalidated when preprocessing logic changes
+        self.cache_version = self._compute_preprocessing_version()
+        logger.info(f"Preprocessing cache version: {self.cache_version}")
+        
         # Preprocessing statistics
         self.stats = {
             'total_participants': 0,
@@ -87,6 +93,29 @@ class EnhancedPreprocessingDataIngestion:
             'cached_loads': 0
         }
         
+    def _compute_preprocessing_version(self) -> str:
+        """Compute version hash based on preprocessing code to invalidate cache when code changes"""
+        try:
+            # Hash the preprocessing files to detect code changes
+            preprocess_dir = Path(__file__).parent.parent / "preprocess"
+            files_to_hash = [
+                preprocess_dir / "wearable_loader.py",
+                preprocess_dir / "cgm_loader.py"
+            ]
+            
+            combined_content = ""
+            for file_path in files_to_hash:
+                if file_path.exists():
+                    with open(file_path, 'r') as f:
+                        combined_content += f.read()
+            
+            # Create hash from file contents
+            version_hash = hashlib.md5(combined_content.encode()).hexdigest()[:8]
+            return f"v{version_hash}"
+        except Exception as e:
+            logger.warning(f"Failed to compute preprocessing version: {e}")
+            return "v_unknown"
+    
     def get_available_participants(self) -> List[str]:
         """Get list of available participants with actual data files"""
         available_participants = []
@@ -117,9 +146,19 @@ class EnhancedPreprocessingDataIngestion:
             try:
                 with open(cache_file, 'rb') as f:
                     cached_data = pickle.load(f)
-                logger.info(f"Loaded cached data for participant {participant_id}")
-                self.stats['cached_loads'] += 1
-                return cached_data
+                
+                # Check cache version - invalidate if version doesn't match
+                cached_version = cached_data.get('_cache_version', 'v_old')
+                if cached_version != self.cache_version:
+                    logger.info(f"Cache version mismatch for {participant_id} (cached: {cached_version}, current: {self.cache_version}). Regenerating...")
+                    # Delete old cache file
+                    cache_file.unlink()
+                else:
+                    # Remove version metadata before returning
+                    cached_data.pop('_cache_version', None)
+                    logger.info(f"Loaded cached data for participant {participant_id}")
+                    self.stats['cached_loads'] += 1
+                    return cached_data
             except Exception as e:
                 logger.warning(f"Failed to load cache for {participant_id}: {e}")
         
@@ -152,12 +191,15 @@ class EnhancedPreprocessingDataIngestion:
                 logger.warning(f"Failed to load {modality} for participant {participant_id}: {e}")
                 self.stats['failed_loads'] += 1
                 
-        # Cache the results
+        # Cache the results with version metadata
         if use_cache and streams:
             try:
+                # Add cache version to streams dict before caching
+                streams_with_version = streams.copy()
+                streams_with_version['_cache_version'] = self.cache_version
                 with open(cache_file, 'wb') as f:
-                    pickle.dump(streams, f)
-                logger.info(f"Cached preprocessed data for participant {participant_id}")
+                    pickle.dump(streams_with_version, f)
+                logger.info(f"Cached preprocessed data for participant {participant_id} (version: {self.cache_version})")
             except Exception as e:
                 logger.warning(f"Failed to cache data for {participant_id}: {e}")
         

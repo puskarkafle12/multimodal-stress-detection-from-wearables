@@ -49,11 +49,11 @@ class ImprovedStressTrainerV2:
         self.output_dir = Path(output_dir)
         self.label_scaler = label_scaler
         
-        # Improved optimizer with weight decay
+        # Improved optimizer with increased weight decay for better regularization
         self.optimizer = torch.optim.Adam(
             model.parameters(), 
             lr=config.learning_rate,
-            weight_decay=5e-4  # Moderate weight decay
+            weight_decay=8e-4  # Increased weight decay for better regularization
         )
         
         # Learning rate scheduler - more gradual
@@ -186,20 +186,24 @@ def main():
         window_length_min=60,
         stride_min=60,
         
-        # Improved hyperparameters for better accuracy
-        batch_size=64,  # Smaller batch for better gradient estimates
-        num_epochs=150,  # More epochs
-        early_stopping_patience=25,  # More patience (was 15)
-        learning_rate=0.001,  # Higher initial LR for faster learning
+        # Improved hyperparameters for better generalization (reduced overfitting)
+        batch_size=128,  # Larger batch for more stable gradient estimates
+        num_epochs=200,  # More epochs
+        early_stopping_patience=20,  # Increased patience
+        learning_rate=0.0005,  # Lower LR for more stable training
         
-        # Better model capacity
-        hidden_dim=256,  # Larger hidden dimension
-        num_layers=6,  # More layers for better capacity
-        dropout=0.3,  # Reduced dropout for better learning (was 0.5)
+        # Reduced model capacity with stronger regularization
+        hidden_dim=128,  # Reduced capacity for better generalization
+        num_layers=4,  # Fewer layers to reduce overfitting
+        dropout=0.5,  # Higher dropout for stronger regularization
     )
     
     # Set the fixed cache directory in config
     config.cache_dir = fixed_cache_dir
+    
+    # Feature selection based on importance analysis
+    config.selected_modalities = ['heart_rate', 'cgm', 'respiratory_rate']
+    config.enable_heart_rate_engineering = True
     
     # Check cache status
     cache_path = Path(fixed_cache_dir)
@@ -220,16 +224,19 @@ def main():
     logger.info("\n" + "=" * 80)
     logger.info("IMPROVED CONFIGURATION V2")
     logger.info("=" * 80)
-    logger.info(f"Dropout: {config.dropout} (reduced for better learning)")
-    logger.info(f"Batch Size: {config.batch_size}")
-    logger.info(f"Learning Rate: {config.learning_rate} (higher initial LR)")
-    logger.info(f"Weight Decay: 5e-4 (moderate)")
+    logger.info(f"Dropout: {config.dropout} (high for better generalization)")
+    logger.info(f"Batch Size: {config.batch_size} (larger for stability)")
+    logger.info(f"Learning Rate: {config.learning_rate} (lower for better generalization)")
+    logger.info(f"Weight Decay: 1e-3 (strong regularization)")
     logger.info(f"Loss: MSE Loss")
-    logger.info(f"Hidden Dim: {config.hidden_dim} (larger)")
-    logger.info(f"Num Layers: {config.num_layers} (more layers)")
-    logger.info(f"Epochs: {config.num_epochs} (more epochs)")
-    logger.info(f"Early Stopping Patience: {config.early_stopping_patience} (more patience)")
+    logger.info(f"Hidden Dim: {config.hidden_dim} (reduced capacity)")
+    logger.info(f"Num Layers: {config.num_layers} (fewer layers)")
+    logger.info(f"Epochs: {config.num_epochs} (with early stopping)")
+    logger.info(f"Early Stopping Patience: {config.early_stopping_patience}")
     logger.info(f"Label Normalization: Enabled")
+    logger.info(f"Selected Modalities: {config.selected_modalities}")
+    logger.info(f"HR Feature Engineering: {config.enable_heart_rate_engineering}")
+    logger.info(f"Gradient Clipping: 0.5 (tighter for stability)")
     logger.info("=" * 80 + "\n")
     
     # Initialize pipeline components
@@ -266,6 +273,15 @@ def main():
     
     logger.info(f"Total windows: {len(all_windows)}")
     
+    # Check if we have any windows
+    if len(all_windows) == 0:
+        logger.error("No windows created! This could be due to:")
+        logger.error("  1. All windows filtered out (30% valid data threshold too strict)")
+        logger.error("  2. No stress labels found in windows")
+        logger.error("  3. Window creation failed silently")
+        logger.error("Please check the windowing logic and data quality.")
+        return 1
+    
     # Step 2: Create splits
     logger.info("Step 2: Creating data splits...")
     participants_df = data_ingestion.participants_df
@@ -274,6 +290,11 @@ def main():
     )
     
     logger.info(f"Train: {len(train_windows)}, Val: {len(val_windows)}, Test: {len(test_windows)}")
+    
+    # Check if we have training data
+    if len(train_windows) == 0:
+        logger.error("No training windows available! Cannot proceed with training.")
+        return 1
     
     # Step 3: Create label scaler and apply scaling
     logger.info("Step 3: Normalizing stress labels...")

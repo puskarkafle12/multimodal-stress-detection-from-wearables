@@ -56,20 +56,33 @@ class StressDataset(Dataset):
         }
     
     def _fit_scaler(self) -> StandardScaler:
-        """Fit StandardScaler on all features"""
+        """Fit StandardScaler on feature values only (not masks)"""
         logger.info("Fitting StandardScaler on training data...")
         
-        # Collect all features
-        all_features = []
+        # Check if we have any windows
+        if len(self.windows) == 0:
+            logger.warning("No windows available for fitting scaler. Returning None.")
+            return None
+        
+        # Collect only value features (skip mask channels)
+        # Features shape: [T, F] where F alternates: value, mask, value, mask, ...
+        all_value_features = []
         for window in self.windows:
-            features = window['features'].flatten()  # Flatten to 1D
-            all_features.append(features)
+            features = window['features']  # [T, F]
+            # Extract only value channels (even indices: 0, 2, 4, 6, 8)
+            value_features = features[:, ::2]  # [T, F//2] - only value channels
+            all_value_features.append(value_features.flatten())
         
-        all_features = np.array(all_features)
+        all_value_features = np.array(all_value_features)
         
-        # Fit scaler
+        # Check if we have valid features
+        if len(all_value_features) == 0 or all_value_features.size == 0:
+            logger.warning("No valid features found for fitting scaler. Returning None.")
+            return None
+        
+        # Fit scaler only on value features
         scaler = StandardScaler()
-        scaler.fit(all_features)
+        scaler.fit(all_value_features)
         
         # Apply scaling
         self._apply_scaling()
@@ -77,17 +90,32 @@ class StressDataset(Dataset):
         return scaler
     
     def _apply_scaling(self):
-        """Apply fitted scaler to all features"""
+        """Apply fitted scaler to value features only, preserve masks"""
         if self.scaler is None:
             return
         
         logger.info("Applying feature scaling...")
         
         for window in self.windows:
-            original_shape = window['features'].shape
-            features_flat = window['features'].flatten()
-            features_scaled = self.scaler.transform(features_flat.reshape(1, -1)).flatten()
-            window['features'] = features_scaled.reshape(original_shape)
+            features = window['features']  # [T, F] where F = 10 (5 modalities × 2 channels)
+            original_shape = features.shape
+            
+            # Separate value and mask channels
+            value_features = features[:, ::2]  # [T, 5] - value channels (indices 0, 2, 4, 6, 8)
+            mask_features = features[:, 1::2]  # [T, 5] - mask channels (indices 1, 3, 5, 7, 9)
+            
+            # Normalize only value features
+            value_shape = value_features.shape
+            value_flat = value_features.flatten()
+            value_scaled = self.scaler.transform(value_flat.reshape(1, -1)).flatten()
+            value_features_scaled = value_scaled.reshape(value_shape)
+            
+            # Reconstruct features: interleave scaled values and original masks
+            features_scaled = np.zeros_like(features)
+            features_scaled[:, ::2] = value_features_scaled  # Scaled values
+            features_scaled[:, 1::2] = mask_features  # Original masks (unchanged)
+            
+            window['features'] = features_scaled
 
 class DataSplitter:
     """Handles participant-based train/val/test splits"""

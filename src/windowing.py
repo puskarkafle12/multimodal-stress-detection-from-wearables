@@ -72,6 +72,12 @@ class WindowingSystem:
             if window_features is None:
                 continue
             
+            # Validate window has sufficient valid data
+            # Check that at least 50% of features have valid masks
+            valid_data_ratio = self._compute_valid_data_ratio(window_features)
+            if valid_data_ratio < 0.3:  # Require at least 30% valid data
+                continue
+            
             # Align stress label - compute average stress value within the 1-hour window (as per TA discussion)
             stress_label = self._align_stress_label_window(streams, start_idx, end_idx)
             
@@ -89,6 +95,15 @@ class WindowingSystem:
         
         logger.info(f"Created {len(windows)} windows for participant {participant_id}")
         return windows
+    
+    def _compute_valid_data_ratio(self, features: np.ndarray) -> float:
+        """Compute ratio of valid data in features"""
+        # Features shape: [T, F] where F alternates: value, mask, value, mask, ...
+        # Extract mask channels (odd indices: 1, 3, 5, 7, 9)
+        mask_channels = features[:, 1::2]  # [T, 5]
+        # Valid data ratio: average of mask values across all time steps and modalities
+        valid_ratio = np.mean(mask_channels)
+        return float(valid_ratio)
     
     def _build_window_features(self, streams: Dict[str, pd.DataFrame], start_idx: int, end_idx: int) -> Optional[np.ndarray]:
         """
@@ -135,8 +150,15 @@ class WindowingSystem:
                     window_values[:overlap_len] = df['value'].iloc[start_idx:overlap_end].values
                     window_masks[:overlap_len] = df['mask'].iloc[start_idx:overlap_end].values
             
-            # Handle NaN values
+            # Handle NaN values - replace with 0 but keep mask as 0
             window_values = np.nan_to_num(window_values, nan=0.0)
+            
+            # Ensure mask is binary (0 or 1)
+            window_masks = (window_masks > 0.5).astype(np.float32)
+            
+            # For missing data (mask=0), set value to 0 (will be normalized later)
+            # This ensures missing data doesn't contribute to the model
+            window_values = window_values * window_masks
             
             # Stack value and mask channels
             modality_features = np.stack([window_values, window_masks], axis=1)
@@ -183,16 +205,28 @@ class WindowingSystem:
                 return None
         
         # Filter to only valid values (mask = 1)
-        valid_mask = window_masks == 1
+        valid_mask = (window_masks > 0.5).astype(bool)
         if np.sum(valid_mask) == 0:
             return None
         
         valid_values = window_values[valid_mask]
         
-        # Compute average stress value within the window
-        avg_stress = np.mean(valid_values)
+        # Remove any NaN or invalid values
+        valid_values = valid_values[~np.isnan(valid_values)]
+        if len(valid_values) == 0:
+            return None
         
-        return float(avg_stress)
+        # Compute average stress value within the window
+        # Use median for robustness to outliers, but fallback to mean
+        if len(valid_values) >= 3:
+            avg_stress = np.median(valid_values)  # More robust to outliers
+        else:
+            avg_stress = np.mean(valid_values)
+        
+        # Ensure stress is non-negative and reasonable
+        avg_stress = max(0.0, float(avg_stress))
+        
+        return avg_stress
     
     def _align_stress_label(self, streams: Dict[str, pd.DataFrame], window_center_time: pd.Timestamp) -> Optional[float]:
         """

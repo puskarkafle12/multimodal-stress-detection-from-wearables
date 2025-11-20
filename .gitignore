@@ -30,7 +30,7 @@ MANIFEST
 # PyInstaller
 *.manifest
 *.spec
-
+*.png
 # Installer logs
 pip-log.txt
 pip-delete-this-directory.txt
