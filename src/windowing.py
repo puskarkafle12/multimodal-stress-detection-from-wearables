@@ -23,6 +23,32 @@ class WindowingSystem:
         self.sampling_rate = config.sampling_rate
         self.alignment_tolerance_min = config.alignment_tolerance_min
         
+        # Get selected modalities from config, or use all 5 by default
+        # Available modalities: heart_rate, sleep, cgm, oxygen_saturation, respiratory_rate
+        all_modalities = ['heart_rate', 'sleep', 'cgm', 'oxygen_saturation', 'respiratory_rate']
+        selected_modalities = getattr(config, 'selected_modalities', None)
+        
+        if selected_modalities is None:
+            # Use all modalities if not specified
+            self.selected_modalities = all_modalities
+        else:
+            # Validate selected modalities
+            valid_modalities = []
+            for mod in selected_modalities:
+                if mod in all_modalities:
+                    valid_modalities.append(mod)
+                else:
+                    logger.warning(f"Unknown modality '{mod}' in selected_modalities. Ignoring.")
+            
+            # If empty after validation, use all modalities
+            if not valid_modalities:
+                logger.warning("No valid modalities selected. Using all modalities.")
+                self.selected_modalities = all_modalities
+            else:
+                self.selected_modalities = valid_modalities
+        
+        logger.info(f"Using modalities: {self.selected_modalities}")
+        
         # Calculate window parameters - Updated for TA requirements
         # 1 hour = 60 minutes = 12 samples at 5-min intervals
         # sampling_rate = 1.0/5.0 (1 sample per 5 minutes)
@@ -78,7 +104,8 @@ class WindowingSystem:
             if valid_data_ratio < 0.3:  # Require at least 30% valid data
                 continue
             
-            # Align stress label - compute average stress value within the 1-hour window (as per TA discussion)
+            # Align stress label - extract stress sequence aligned with window (as per TA discussion)
+            # Returns sequence of stress values, one per timestep, for temporal relationship analysis
             stress_label = self._align_stress_label_window(streams, start_idx, end_idx)
             
             if stress_label is not None:
@@ -89,7 +116,7 @@ class WindowingSystem:
                     'end_time': window_end_time,
                     'center_time': window_center_time,
                     'features': window_features,
-                    'stress_label': stress_label
+                    'stress_label': stress_label  # Now a sequence array [window_length], not a single value
                 }
                 windows.append(window_data)
         
@@ -120,11 +147,8 @@ class WindowingSystem:
         features = []
         feature_names = []
         
-        # Define modality order for consistent feature ordering
-        # 5 signals as per TA discussion: heart_rate, sleep, cgm, oxygen_saturation, respiratory_rate
-        modality_order = [
-            'heart_rate', 'sleep', 'cgm', 'oxygen_saturation', 'respiratory_rate'
-        ]
+        # Use selected modalities from config (set in __init__)
+        modality_order = self.selected_modalities
         
         for modality in modality_order:
             if modality not in streams:
@@ -173,9 +197,10 @@ class WindowingSystem:
         
         return feature_tensor
     
-    def _align_stress_label_window(self, streams: Dict[str, pd.DataFrame], start_idx: int, end_idx: int) -> Optional[float]:
+    def _align_stress_label_window(self, streams: Dict[str, pd.DataFrame], start_idx: int, end_idx: int) -> Optional[np.ndarray]:
         """
-        Compute average stress label within the 1-hour window (as per TA discussion)
+        Extract stress label sequence aligned with the window (as per TA discussion)
+        Returns sequence of stress values, one per timestep, for temporal analysis
         
         Args:
             streams: Synchronized modality streams
@@ -183,7 +208,8 @@ class WindowingSystem:
             end_idx: End index for window
             
         Returns:
-            Average stress value within the window or None if no valid labels found
+            Stress sequence array of shape [window_length] or None if no valid labels found
+            Each value corresponds to stress at that timestep (aligned with wearable signals)
         """
         if 'stress' not in streams:
             return None
@@ -216,17 +242,42 @@ class WindowingSystem:
         if len(valid_values) == 0:
             return None
         
-        # Compute average stress value within the window
-        # Use median for robustness to outliers, but fallback to mean
-        if len(valid_values) >= 3:
-            avg_stress = np.median(valid_values)  # More robust to outliers
-        else:
-            avg_stress = np.mean(valid_values)
+        # Return stress sequence aligned with window (as per TA discussion)
+        # This enables temporal relationship analysis (e.g., HR ranges → stress patterns)
+        window_length = end_idx - start_idx
         
-        # Ensure stress is non-negative and reasonable
-        avg_stress = max(0.0, float(avg_stress))
+        # Ensure we have the correct length
+        if len(window_values) != window_length:
+            # Pad or truncate if needed
+            if len(window_values) < window_length:
+                padding = np.full(window_length - len(window_values), np.nan)
+                window_values = np.concatenate([window_values, padding])
+                window_masks = np.concatenate([window_masks, np.zeros(len(padding))])
+            else:
+                window_values = window_values[:window_length]
+                window_masks = window_masks[:window_length]
         
-        return avg_stress
+        # Handle NaN values: forward fill, then backward fill, then 0
+        stress_sequence = window_values.copy().astype(np.float32)
+        
+        # Forward fill NaN values
+        mask = np.isnan(stress_sequence)
+        if np.any(mask):
+            # Forward fill
+            for i in range(1, len(stress_sequence)):
+                if np.isnan(stress_sequence[i]) and not np.isnan(stress_sequence[i-1]):
+                    stress_sequence[i] = stress_sequence[i-1]
+            # Backward fill
+            for i in range(len(stress_sequence)-2, -1, -1):
+                if np.isnan(stress_sequence[i]) and not np.isnan(stress_sequence[i+1]):
+                    stress_sequence[i] = stress_sequence[i+1]
+            # Fill remaining NaN with 0
+            stress_sequence = np.nan_to_num(stress_sequence, nan=0.0)
+        
+        # Ensure non-negative
+        stress_sequence = np.maximum(stress_sequence, 0.0)
+        
+        return stress_sequence  # Return sequence [window_length], not single value
     
     def _align_stress_label(self, streams: Dict[str, pd.DataFrame], window_center_time: pd.Timestamp) -> Optional[float]:
         """

@@ -1,13 +1,11 @@
 """
-Improved 1D CNN Training V2 - Better Accuracy
-==============================================
-Fixes:
-1. Increased epochs and early stopping patience
-2. Better model initialization (output bias initialization)
-3. Reduced dropout for better learning
-4. Better learning rate schedule
-5. Increased model capacity
-6. Better regularization balance
+Optimized Training Script - Architecture-Specific Configurations
+================================================================
+
+This script trains models with optimized hyperparameters for each architecture:
+- Longer windows (2-4 hours) for better temporal modeling
+- Architecture-specific hyperparameters
+- Better utilization of each model's strengths
 """
 
 import sys
@@ -43,7 +41,7 @@ logger = logging.getLogger(__name__)
 class ImprovedStressTrainerV2:
     """Improved trainer with better initialization and training strategy"""
     
-    def __init__(self, model, config, output_dir, label_scaler=None):
+    def __init__(self, model, config, output_dir, label_scaler=None, weight_decay=5e-4):
         self.model = model
         self.config = config
         self.output_dir = Path(output_dir)
@@ -53,7 +51,7 @@ class ImprovedStressTrainerV2:
         self.optimizer = torch.optim.Adam(
             model.parameters(), 
             lr=config.learning_rate,
-            weight_decay=5e-4  # Moderate weight decay
+            weight_decay=weight_decay
         )
         
         # Learning rate scheduler - more aggressive reduction
@@ -62,7 +60,6 @@ class ImprovedStressTrainerV2:
         )
         
         # Huber loss - less sensitive to outliers, better for regression
-        # Combines benefits of MSE (for small errors) and MAE (for large errors)
         self.criterion = nn.HuberLoss(delta=1.0)
         
         # Early stopping with more patience
@@ -77,7 +74,7 @@ class ImprovedStressTrainerV2:
     def _create_early_stopping(self, patience):
         """Create early stopping callback"""
         class EarlyStopping:
-            def __init__(self, patience=25):
+            def __init__(self, patience=30):  # Increased patience for early fusion
                 self.patience = patience
                 self.best_loss = float('inf')
                 self.counter = 0
@@ -100,7 +97,7 @@ class ImprovedStressTrainerV2:
         return EarlyStopping(patience)
 
 def create_label_scaler(train_windows):
-    """Create label scaler from training windows"""
+    """Create label scaler from training windows (handles both scalar and sequence labels)"""
     from sklearn.preprocessing import StandardScaler
     
     train_labels = [w['stress_label'] for w in train_windows if w.get('stress_label') is not None]
@@ -108,15 +105,24 @@ def create_label_scaler(train_windows):
     if not train_labels:
         return None
     
+    # Handle both scalar (old) and sequence (new) labels
+    # Flatten sequences if needed
+    label_array = []
+    for label in train_labels:
+        if isinstance(label, (list, np.ndarray)):
+            label_array.extend(np.array(label).flatten())
+        else:
+            label_array.append(label)
+    
     scaler = StandardScaler()
-    scaler.fit(np.array(train_labels).reshape(-1, 1))
+    scaler.fit(np.array(label_array).reshape(-1, 1))
     
     logger.info(f"Label scaler fitted: mean={scaler.mean_[0]:.2f}, std={scaler.scale_[0]:.2f}")
     
     return scaler
 
 def apply_label_scaling(windows, scaler):
-    """Apply label scaling to windows (creates new windows to avoid modifying original)"""
+    """Apply label scaling to windows (handles both scalar and sequence labels)"""
     if scaler is None:
         return windows
     
@@ -126,8 +132,17 @@ def apply_label_scaling(windows, scaler):
         new_window = copy.deepcopy(window)
         if new_window.get('stress_label') is not None:
             original_label = new_window['stress_label']
-            scaled_label = scaler.transform([[original_label]])[0][0]
-            new_window['stress_label'] = float(scaled_label)
+            
+            # Handle sequence labels (new) vs scalar labels (old)
+            if isinstance(original_label, (list, np.ndarray)):
+                # Sequence label: scale each timestep
+                label_array = np.array(original_label).reshape(-1, 1)
+                scaled_array = scaler.transform(label_array).flatten()
+                new_window['stress_label'] = scaled_array.astype(np.float32).tolist()
+            else:
+                # Scalar label: scale single value
+                scaled_label = scaler.transform([[original_label]])[0][0]
+                new_window['stress_label'] = float(scaled_label)
         scaled_windows.append(new_window)
     
     return scaled_windows
@@ -136,13 +151,10 @@ def initialize_model_weights(model, label_scaler=None):
     """Initialize model weights, especially output layer bias"""
     def init_weights(m):
         if isinstance(m, nn.Linear):
-            # Xavier uniform initialization
             torch.nn.init.xavier_uniform_(m.weight, gain=1.0)
             if m.bias is not None:
-                # Initialize bias to zero (labels are normalized to mean=0)
                 torch.nn.init.zeros_(m.bias)
         elif isinstance(m, nn.Conv1d):
-            # Kaiming uniform for ReLU
             torch.nn.init.kaiming_uniform_(m.weight, mode='fan_in', nonlinearity='relu')
             if m.bias is not None:
                 torch.nn.init.zeros_(m.bias)
@@ -152,14 +164,11 @@ def initialize_model_weights(model, label_scaler=None):
     
     model.apply(init_weights)
     
-    # Initialize output layer bias to match normalized label distribution
-    # Since labels are normalized to mean=0, std=1, initialize bias close to 0
+    # Initialize output layer bias
     if hasattr(model, 'fc2') and model.fc2.bias is not None:
-        # Initialize final output bias to 0 (labels normalized to mean=0)
         torch.nn.init.zeros_(model.fc2.bias)
         logger.info("✓ Output layer bias initialized to 0 (labels normalized)")
     elif hasattr(model, 'fc') and model.fc.bias is not None:
-        # Fallback for older model architecture
         torch.nn.init.zeros_(model.fc.bias)
         logger.info("✓ Output layer bias initialized to 0 (labels normalized)")
     
@@ -168,42 +177,141 @@ def initialize_model_weights(model, label_scaler=None):
         torch.nn.init.normal_(model.cls_token, mean=0.0, std=0.02)
         logger.info("✓ CLS token initialized for transformer")
 
+def get_model_config(model_type, window_length_min):
+    """Get optimized configuration for each model type"""
+    
+    base_config = {
+        'window_length_min': window_length_min,
+        'stride_min': window_length_min,  # Non-overlapping windows
+        'batch_size': 64,
+        'num_epochs': 300,
+        'early_stopping_patience': 30,
+        'learning_rate': 0.001,
+        'dropout': 0.4,  # Increased for better regularization
+        'weight_decay': 1e-3,  # Increased weight decay for regularization
+    }
+    
+    if model_type == "cnn":
+        return {
+            **base_config,
+            'hidden_dim': 256,
+            'num_layers': 6,
+            'learning_rate': 0.001,  # CNN works well with standard LR
+        }
+    elif model_type == "lstm":
+        return {
+            **base_config,
+            'hidden_dim': 256,
+            'num_layers': 4,  # Fewer layers for LSTM (gradient flow)
+            'learning_rate': 0.0003,  # Lower LR to prevent overfitting (was 0.0008)
+            'dropout': 0.4,  # More dropout for regularization
+            'bidirectional': True,  # Enable bidirectional for better temporal modeling
+        }
+    elif model_type == "transformer":
+        return {
+            **base_config,
+            'hidden_dim': 256,
+            'num_layers': 4,  # Fewer layers but deeper attention
+            'num_heads': 8,  # Multi-head attention
+            'learning_rate': 0.0005,  # Lower LR for transformer stability
+            'dropout': 0.2,  # Less dropout for transformers
+        }
+    elif model_type == "early_fusion":
+        return {
+            **base_config,
+            'hidden_dim': 256,
+            'num_layers': 4,
+            'learning_rate': 0.0003,  # Lower LR to prevent overfitting (was 0.0008)
+            'dropout': 0.5,  # Higher dropout for better regularization (was 0.3)
+            'weight_decay': 1e-3,  # Increased weight decay (was 5e-4)
+            'encoder_type': 'cnn',  # Default encoder
+        }
+    elif model_type == "late_fusion":
+        return {
+            **base_config,
+            'hidden_dim': 128,  # Per-modality encoder hidden dim
+            'num_layers': 2,  # Fewer layers per modality encoder
+            'learning_rate': 0.0005,  # Lower LR for attention fusion
+            'dropout': 0.3,
+            'fusion_type': 'attention',  # Use attention fusion
+        }
+    else:
+        return base_config
+
 def main():
-    """Run improved training V2"""
+    """Run optimized training"""
+    
+    import argparse
+    parser = argparse.ArgumentParser(description='Train optimized model')
+    parser.add_argument('--model', type=str, default='cnn', 
+                       choices=['cnn', 'lstm', 'transformer', 'early_fusion', 'late_fusion'],
+                       help='Model type to train')
+    parser.add_argument('--encoder_type', type=str, default='lstm',
+                       choices=['cnn', 'lstm', 'transformer'],
+                       help='Encoder type for early_fusion model (only used when --model=early_fusion)')
+    parser.add_argument('--window_hours', type=int, default=2,
+                       choices=[1, 2, 3, 4],
+                       help='Window length in hours')
+    parser.add_argument('--max_participants', type=int, default=None,
+                       help='Maximum number of participants to process (for quick testing)')
+    args = parser.parse_args()
     
     start_time = time.time()
     
+    model_type = args.model
+    window_length_min = args.window_hours * 60
+    
     logger.info("=" * 80)
-    logger.info("LSTM MODEL TRAINING - STRESS PREDICTION")
+    if model_type == "early_fusion":
+        logger.info(f"EARLY FUSION TRAINING ({args.encoder_type.upper()} encoder) - {args.window_hours}H WINDOWS")
+    elif model_type == "late_fusion":
+        logger.info(f"LATE FUSION TRAINING (Attention-based) - {args.window_hours}H WINDOWS")
+    else:
+        logger.info(f"OPTIMIZED {model_type.upper()} TRAINING - {args.window_hours}H WINDOWS")
     logger.info("=" * 80)
+    
+    # Get optimized configuration
+    if model_type == "early_fusion":
+        # Use encoder_type config for early fusion
+        model_config = get_model_config(args.encoder_type, window_length_min)
+    elif model_type == "late_fusion":
+        # Late fusion has its own config
+        model_config = get_model_config("late_fusion", window_length_min)
+    else:
+        model_config = get_model_config(model_type, window_length_min)
     
     # Improved configuration
     base_dir = Path(__file__).parent.parent
-    improved_output_dir = str(base_dir / "data" / "processed" / "results_lstm")
+    if model_type == "early_fusion":
+        output_dir_name = f"results_early_fusion_{args.encoder_type}_optimized_{args.window_hours}h"
+    else:
+        output_dir_name = f"results_{model_type}_optimized_{args.window_hours}h"
+    improved_output_dir = str(base_dir / "data" / "processed" / output_dir_name)
     
     # Model-specific cache directory - each model has its own cache
-    model_type = "lstm"
     fixed_cache_dir = str(base_dir / "data" / "processed" / f"preprocessed_cache_{model_type}")
     
     config = PipelineConfig(
         data_root=str(base_dir / "AI-READI"),
         output_dir=improved_output_dir,
-        
         model_type=model_type,
-        window_length_min=60,
-        stride_min=60,
-        
-        # Improved hyperparameters for better accuracy (reduced RMSE/MAE)
-        batch_size=64,  # Smaller batch for better gradient estimates
-        num_epochs=300,  # More epochs for better convergence
-        early_stopping_patience=30,  # More patience
-        learning_rate=0.001,  # Higher initial LR for faster learning
-        
-        # Increased model capacity for better accuracy
-        hidden_dim=256,  # Larger capacity for better learning
-        num_layers=6,  # More layers for better feature extraction
-        dropout=0.3,  # Reduced dropout to allow more learning
+        **{k: v for k, v in model_config.items() if k not in ['bidirectional', 'num_heads', 'encoder_type', 'weight_decay', 'fusion_type']}
     )
+    
+    # Get weight_decay separately (not a PipelineConfig field)
+    weight_decay = model_config.get('weight_decay', 5e-4)
+    
+    # Set encoder-specific parameters
+    if model_type == "early_fusion":
+        config.encoder_type = args.encoder_type
+        if args.encoder_type == "lstm" and 'bidirectional' in model_config:
+            config.bidirectional = model_config['bidirectional']
+        if args.encoder_type == "transformer" and 'num_heads' in model_config:
+            config.num_heads = model_config['num_heads']
+    elif model_type == "lstm" and 'bidirectional' in model_config:
+        config.bidirectional = model_config['bidirectional']
+    elif model_type == "transformer" and 'num_heads' in model_config:
+        config.num_heads = model_config['num_heads']
     
     # Set the fixed cache directory in config
     config.cache_dir = fixed_cache_dir
@@ -224,29 +332,37 @@ def main():
         logger.info(f"✓ Created model-specific cache directory: {fixed_cache_dir}")
         logger.info(f"  All participants will be preprocessed and cached here")
     
-    # Create output directory (for models, logs, etc. - NOT cache)
+    # Create output directory
     config.output_dir.mkdir(parents=True, exist_ok=True)
     (config.output_dir / "models").mkdir(exist_ok=True)
     
     logger.info("\n" + "=" * 80)
-    logger.info("LSTM MODEL CONFIGURATION")
+    logger.info(f"OPTIMIZED {model_type.upper()} CONFIGURATION")
     logger.info("=" * 80)
-    logger.info(f"Model Type: LSTM (Long Short-Term Memory)")
-    logger.info(f"Dropout: {config.dropout} (reduced for better learning)")
-    logger.info(f"Batch Size: {config.batch_size} (optimized for accuracy)")
-    logger.info(f"Learning Rate: {config.learning_rate} (higher for faster learning)")
-    logger.info(f"Weight Decay: 5e-4 (moderate regularization)")
-    logger.info(f"Loss: Huber Loss (better for regression, less sensitive to outliers)")
-    logger.info(f"Hidden Dim: {config.hidden_dim} (increased capacity)")
-    logger.info(f"Num Layers: {config.num_layers} (LSTM layers)")
-    logger.info(f"Bidirectional: False (can be enabled for better performance)")
-    logger.info(f"Window Length: {int(config.window_length_min / 5)} samples (60 min at 5-min intervals)")
+    logger.info(f"Model Type: {model_type.upper()}")
+    if model_type == "early_fusion":
+        logger.info(f"Encoder Type: {config.encoder_type.upper()}")
+    logger.info(f"Window Length: {window_length_min} minutes ({args.window_hours} hours)")
+    logger.info(f"Window Samples: {int(window_length_min / 5)} (at 5-min intervals)")
+    logger.info(f"Dropout: {config.dropout}")
+    logger.info(f"Batch Size: {config.batch_size}")
+    logger.info(f"Learning Rate: {config.learning_rate}")
+    logger.info(f"Weight Decay: {config.weight_decay if hasattr(config, 'weight_decay') else 5e-4}")
+    logger.info(f"Loss: Huber Loss")
+    logger.info(f"Hidden Dim: {config.hidden_dim}")
+    logger.info(f"Num Layers: {config.num_layers}")
+    if model_type == "early_fusion" and config.encoder_type == "lstm" and hasattr(config, 'bidirectional'):
+        logger.info(f"Bidirectional: {config.bidirectional}")
+    elif model_type == "lstm" and hasattr(config, 'bidirectional'):
+        logger.info(f"Bidirectional: {config.bidirectional}")
+    if model_type == "early_fusion" and config.encoder_type == "transformer" and hasattr(config, 'num_heads'):
+        logger.info(f"Num Heads: {config.num_heads}")
+    elif model_type == "transformer" and hasattr(config, 'num_heads'):
+        logger.info(f"Num Heads: {config.num_heads}")
     logger.info(f"Epochs: {config.num_epochs} (with early stopping)")
     logger.info(f"Early Stopping Patience: {config.early_stopping_patience}")
-    logger.info(f"Label Normalization: Enabled")
     logger.info(f"Selected Modalities: {config.selected_modalities}")
     logger.info(f"HR Feature Engineering: {config.enable_heart_rate_engineering}")
-    logger.info(f"Gradient Clipping: 2.0 (for stability)")
     logger.info("=" * 80 + "\n")
     
     # Initialize pipeline components
@@ -263,6 +379,11 @@ def main():
     logger.info("Step 1: Loading data...")
     all_windows = []
     participants = data_ingestion.get_available_participants()
+    
+    # Limit participants if specified
+    if args.max_participants is not None:
+        participants = participants[:args.max_participants]
+        logger.info(f"⚠️  LIMITED TO FIRST {args.max_participants} PARTICIPANTS (QUICK TEST MODE)")
     
     logger.info(f"Processing {len(participants)} participants...")
     for i, participant_id in enumerate(participants):
@@ -283,13 +404,8 @@ def main():
     
     logger.info(f"Total windows: {len(all_windows)}")
     
-    # Check if we have any windows
     if len(all_windows) == 0:
-        logger.error("No windows created! This could be due to:")
-        logger.error("  1. All windows filtered out (30% valid data threshold too strict)")
-        logger.error("  2. No stress labels found in windows")
-        logger.error("  3. Window creation failed silently")
-        logger.error("Please check the windowing logic and data quality.")
+        logger.error("No windows created!")
         return 1
     
     # Step 2: Create splits
@@ -301,9 +417,8 @@ def main():
     
     logger.info(f"Train: {len(train_windows)}, Val: {len(val_windows)}, Test: {len(test_windows)}")
     
-    # Check if we have training data
     if len(train_windows) == 0:
-        logger.error("No training windows available! Cannot proceed with training.")
+        logger.error("No training windows available!")
         return 1
     
     # Step 3: Create label scaler and apply scaling
@@ -315,21 +430,86 @@ def main():
         val_windows = apply_label_scaling(val_windows, label_scaler)
         test_windows = apply_label_scaling(test_windows, label_scaler)
         logger.info("✓ Labels normalized")
-    else:
-        logger.warning("⚠ Label scaler not created, using raw labels")
     
     # Step 4: Create data loaders
     logger.info("Step 4: Creating data loaders...")
-    train_loader, val_loader, test_loader = data_splitter.create_dataloaders(
-        train_windows, val_windows, test_windows
-    )
+    
+    # For late fusion, need custom collate function
+    if model_type == "late_fusion":
+        from late_fusion_adapter import LateFusionDatasetAdapter, late_fusion_collate_fn
+        from torch.utils.data import DataLoader
+        
+        # Get selected modalities from config
+        selected_modalities = getattr(config, 'selected_modalities', None)
+        all_modalities = ['heart_rate', 'sleep', 'cgm', 'oxygen_saturation', 'respiratory_rate']
+        if selected_modalities is None:
+            selected_modalities = all_modalities
+        else:
+            # Validate and filter
+            selected_modalities = [m for m in selected_modalities if m in all_modalities]
+            if not selected_modalities:
+                selected_modalities = all_modalities
+        
+        # Create datasets
+        from data_splits import StressDataset
+        train_dataset = StressDataset(train_windows, fit_scaler=True)
+        val_dataset = StressDataset(val_windows, scaler=train_dataset.scaler)
+        test_dataset = StressDataset(test_windows, scaler=train_dataset.scaler)
+        
+        # Wrap with adapter (pass selected modalities)
+        logger.info(f"Converting data format for late fusion (concatenated -> dict)...")
+        logger.info(f"Using modalities: {selected_modalities}")
+        train_dataset = LateFusionDatasetAdapter(train_dataset, modality_order=selected_modalities)
+        val_dataset = LateFusionDatasetAdapter(val_dataset, modality_order=selected_modalities)
+        test_dataset = LateFusionDatasetAdapter(test_dataset, modality_order=selected_modalities)
+        
+        # Create collate function with modality order
+        def collate_fn(batch):
+            return late_fusion_collate_fn(batch, modality_order=selected_modalities)
+        
+        # Create loaders with custom collate function
+        train_loader = DataLoader(train_dataset, batch_size=config.batch_size, shuffle=True, 
+                                 collate_fn=collate_fn, num_workers=0, pin_memory=True)
+        val_loader = DataLoader(val_dataset, batch_size=config.batch_size, shuffle=False,
+                               collate_fn=collate_fn, num_workers=0, pin_memory=True)
+        test_loader = DataLoader(test_dataset, batch_size=config.batch_size, shuffle=False,
+                                collate_fn=collate_fn, num_workers=0, pin_memory=True)
+    else:
+        train_loader, val_loader, test_loader = data_splitter.create_dataloaders(
+            train_windows, val_windows, test_windows
+        )
     
     # Step 5: Create model
     logger.info("Step 5: Creating model...")
-    sample_batch = next(iter(train_loader))
-    input_dim = sample_batch['features'].shape[2]
+    # For late fusion, input_dim is per-modality (2), not total
+    if model_type == "late_fusion":
+        input_dim = 2  # Each modality has 2 channels (value + mask)
+    else:
+        sample_batch = next(iter(train_loader))
+        input_dim = sample_batch['features'].shape[2]
     
-    model = ModelFactory.create_model(config.model_type, input_dim, config)
+    # Create model with optimized parameters
+    if model_type == "lstm" and hasattr(config, 'bidirectional'):
+        from models import StressLSTM
+        model = StressLSTM(
+            input_dim=input_dim,
+            hidden_dim=config.hidden_dim,
+            num_layers=config.num_layers,
+            dropout=config.dropout,
+            bidirectional=config.bidirectional
+        )
+    elif model_type == "transformer" and hasattr(config, 'num_heads'):
+        from models import StressTransformer
+        model = StressTransformer(
+            input_dim=input_dim,
+            hidden_dim=config.hidden_dim,
+            num_layers=config.num_layers,
+            num_heads=config.num_heads,
+            dropout=config.dropout,
+            window_length=int(config.window_length_min / 5)
+        )
+    else:
+        model = ModelFactory.create_model(config.model_type, input_dim, config)
     
     # Better initialization
     initialize_model_weights(model, label_scaler)
@@ -338,7 +518,7 @@ def main():
     # Step 6: Train model
     logger.info("Step 6: Training model...")
     
-    trainer = ImprovedStressTrainerV2(model, config, config.output_dir, label_scaler)
+    trainer = ImprovedStressTrainerV2(model, config, config.output_dir, label_scaler, weight_decay=weight_decay)
     
     # Training loop
     best_val_loss = float('inf')
@@ -355,10 +535,13 @@ def main():
         num_batches = 0
         
         for batch in train_loader:
-            features = batch['features'].to(trainer.device)
+            # Handle late fusion (dict) vs early fusion (tensor)
+            if isinstance(batch['features'], dict):
+                features = {k: v.to(trainer.device) for k, v in batch['features'].items()}
+            else:
+                features = batch['features'].to(trainer.device)
             labels = batch['label'].to(trainer.device)
             
-            # Labels are already normalized in windows
             labels_norm = labels
             
             # Forward pass
@@ -372,31 +555,37 @@ def main():
             loss.backward()
             
             # Gradient clipping
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=2.0)  # Less aggressive clipping for larger model
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=2.0)
             
             trainer.optimizer.step()
             
-            # Denormalize for metrics
+            # Denormalize for metrics (handle sequence predictions)
             if label_scaler is not None:
-                # Ensure predictions are 2D for inverse_transform
                 pred_np = predictions.detach().cpu().numpy()
-                if pred_np.ndim == 1:
-                    pred_np = pred_np.reshape(-1, 1)
-                elif pred_np.shape[1] != 1:
-                    pred_np = pred_np.flatten().reshape(-1, 1)
-                
                 labels_np = labels_norm.cpu().numpy()
-                if labels_np.ndim == 1:
-                    labels_np = labels_np.reshape(-1, 1)
-                elif labels_np.shape[1] != 1:
-                    labels_np = labels_np.flatten().reshape(-1, 1)
                 
-                pred_denorm = torch.FloatTensor(label_scaler.inverse_transform(pred_np)).squeeze()
-                labels_denorm = torch.FloatTensor(label_scaler.inverse_transform(labels_np)).squeeze()
+                # Handle sequence predictions: [batch_size, window_length]
+                if pred_np.ndim == 2 and pred_np.shape[1] > 1:
+                    # Sequence prediction: flatten for scaling
+                    pred_flat = pred_np.flatten().reshape(-1, 1)
+                    labels_flat = labels_np.flatten().reshape(-1, 1)
+                    pred_denorm_flat = label_scaler.inverse_transform(pred_flat)
+                    labels_denorm_flat = label_scaler.inverse_transform(labels_flat)
+                    # Reshape back to sequences
+                    pred_denorm = torch.FloatTensor(pred_denorm_flat.reshape(pred_np.shape))
+                    labels_denorm = torch.FloatTensor(labels_denorm_flat.reshape(labels_np.shape))
+                else:
+                    # Scalar prediction (backward compatibility)
+                    if pred_np.ndim == 1:
+                        pred_np = pred_np.reshape(-1, 1)
+                        labels_np = labels_np.reshape(-1, 1)
+                    pred_denorm = torch.FloatTensor(label_scaler.inverse_transform(pred_np)).squeeze()
+                    labels_denorm = torch.FloatTensor(label_scaler.inverse_transform(labels_np)).squeeze()
             else:
-                pred_denorm = predictions.detach().cpu().squeeze()
-                labels_denorm = labels.cpu().squeeze()
+                pred_denorm = predictions.detach().cpu()
+                labels_denorm = labels.cpu()
             
+            # Compute MAE: mean over all timesteps and samples
             mae = torch.mean(torch.abs(pred_denorm - labels_denorm)).item()
             
             train_loss += loss.item()
@@ -416,7 +605,11 @@ def main():
         
         with torch.no_grad():
             for batch in val_loader:
-                features = batch['features'].to(trainer.device)
+                # Handle late fusion (dict) vs early fusion (tensor)
+                if isinstance(batch['features'], dict):
+                    features = {k: v.to(trainer.device) for k, v in batch['features'].items()}
+                else:
+                    features = batch['features'].to(trainer.device)
                 labels = batch['label'].to(trainer.device)
                 
                 labels_norm = labels
@@ -424,27 +617,33 @@ def main():
                 predictions = model(features)
                 loss = trainer.criterion(predictions, labels_norm)
                 
-                # Denormalize for metrics
+                # Denormalize for metrics (handle sequence predictions)
                 if label_scaler is not None:
-                    # Ensure predictions are 2D for inverse_transform
-                    pred_np = predictions.cpu().numpy()
-                    if pred_np.ndim == 1:
-                        pred_np = pred_np.reshape(-1, 1)
-                    elif pred_np.shape[1] != 1:
-                        pred_np = pred_np.flatten().reshape(-1, 1)
-                    
+                    pred_np = predictions.detach().cpu().numpy()
                     labels_np = labels_norm.cpu().numpy()
-                    if labels_np.ndim == 1:
-                        labels_np = labels_np.reshape(-1, 1)
-                    elif labels_np.shape[1] != 1:
-                        labels_np = labels_np.flatten().reshape(-1, 1)
                     
-                    pred_denorm = torch.FloatTensor(label_scaler.inverse_transform(pred_np)).squeeze()
-                    labels_denorm = torch.FloatTensor(label_scaler.inverse_transform(labels_np)).squeeze()
+                    # Handle sequence predictions: [batch_size, window_length]
+                    if pred_np.ndim == 2 and pred_np.shape[1] > 1:
+                        # Sequence prediction: flatten for scaling
+                        pred_flat = pred_np.flatten().reshape(-1, 1)
+                        labels_flat = labels_np.flatten().reshape(-1, 1)
+                        pred_denorm_flat = label_scaler.inverse_transform(pred_flat)
+                        labels_denorm_flat = label_scaler.inverse_transform(labels_flat)
+                        # Reshape back to sequences
+                        pred_denorm = torch.FloatTensor(pred_denorm_flat.reshape(pred_np.shape))
+                        labels_denorm = torch.FloatTensor(labels_denorm_flat.reshape(labels_np.shape))
+                    else:
+                        # Scalar prediction (backward compatibility)
+                        if pred_np.ndim == 1:
+                            pred_np = pred_np.reshape(-1, 1)
+                            labels_np = labels_np.reshape(-1, 1)
+                        pred_denorm = torch.FloatTensor(label_scaler.inverse_transform(pred_np)).squeeze()
+                        labels_denorm = torch.FloatTensor(label_scaler.inverse_transform(labels_np)).squeeze()
                 else:
-                    pred_denorm = predictions.cpu().squeeze()
-                    labels_denorm = labels.cpu().squeeze()
+                    pred_denorm = predictions.detach().cpu()
+                    labels_denorm = labels.cpu()
                 
+                # Compute MAE and RMSE: mean over all timesteps and samples
                 mae = torch.mean(torch.abs(pred_denorm - labels_denorm)).item()
                 rmse = torch.sqrt(torch.mean((pred_denorm - labels_denorm) ** 2)).item()
                 

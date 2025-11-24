@@ -22,7 +22,7 @@ def run_training(model_type, window_hours):
     
     cmd = [
         sys.executable,
-        str(base_dir / "scripts" / "train_optimized.py"),
+        str(base_dir / "scripts" / "train.py"),
         "--model", model_type,
         "--window_hours", str(window_hours)
     ]

@@ -78,6 +78,10 @@ class PipelineConfig:
     bidirectional: bool = False  # For LSTM
     num_heads: int = 8  # For Transformer
     
+    # Modality selection
+    selected_modalities: Optional[List[str]] = None  # None = use all 5 modalities
+    # Available: 'heart_rate', 'sleep', 'cgm', 'oxygen_saturation', 'respiratory_rate'
+    
     # Evaluation
     stress_threshold: float = 0.5
     alignment_tolerance_min: int = 5  # minutes

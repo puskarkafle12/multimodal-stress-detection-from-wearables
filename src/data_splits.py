@@ -43,14 +43,21 @@ class StressDataset(Dataset):
         
         # Extract features and label
         features = torch.FloatTensor(window['features'])
-        label = torch.FloatTensor([window['stress_label']])
+        
+        # Label is now a sequence (array), not a single value
+        stress_label = window['stress_label']
+        if isinstance(stress_label, (list, np.ndarray)):
+            label = torch.FloatTensor(stress_label)  # [window_length]
+        else:
+            # Backward compatibility: if single value, convert to sequence
+            label = torch.FloatTensor([stress_label])
         
         # Add participant ID for group-aware training
         participant_id = window['participant_id']
         
         return {
             'features': features,
-            'label': label,
+            'label': label,  # Now shape [window_length] instead of [1]
             'participant_id': participant_id,
             'window_id': window['window_id']
         }

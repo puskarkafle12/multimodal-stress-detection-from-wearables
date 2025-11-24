@@ -105,7 +105,8 @@ class StressCNN(nn.Module):
         self.fc1 = nn.Linear(hidden_dim, hidden_dim // 2)
         self.fc1_bn = nn.BatchNorm1d(hidden_dim // 2)
         self.fc1_dropout = nn.Dropout(dropout * 0.5)
-        self.fc2 = nn.Linear(hidden_dim // 2, 1)
+        # Output layer: predict sequence instead of single value
+        self.fc2 = nn.Linear(hidden_dim // 2, self.window_length)  # [batch_size, window_length]
         
     def forward(self, x):
         # x shape: [batch_size, window_length, input_dim]
@@ -122,16 +123,29 @@ class StressCNN(nn.Module):
                 x = x + residual  # Residual connection
             x = dropout(x)
         
-        # Global pooling
-        x = self.global_pool(x)  # [batch_size, hidden_dim, 1]
-        x = x.squeeze(-1)  # [batch_size, hidden_dim]
+        # For sequence prediction, preserve temporal structure
+        # x shape: [batch_size, hidden_dim, window_length]
+        # Transpose to [batch_size, window_length, hidden_dim] for per-timestep processing
+        x = x.transpose(1, 2)  # [batch_size, window_length, hidden_dim]
         
-        # Improved output layers with deeper FC network
-        x = self.fc1(x)  # [batch_size, hidden_dim // 2]
-        x = self.fc1_bn(x)  # Batch norm on 1D
+        # Reshape to apply FC layers: [batch_size * window_length, hidden_dim]
+        batch_size, window_length, hidden_dim = x.shape
+        x = x.reshape(batch_size * window_length, hidden_dim)
+        
+        # Apply FC layers
+        x = self.fc1(x)  # [batch_size * window_length, hidden_dim // 2]
+        x = self.fc1_bn(x)  # Batch norm
         x = F.relu(x)
         x = self.fc1_dropout(x)
-        x = self.fc2(x)  # [batch_size, 1]
+        x = self.fc2(x)  # [batch_size * window_length, window_length]
+        
+        # Reshape back: [batch_size, window_length, window_length]
+        x = x.reshape(batch_size, window_length, self.window_length)
+        
+        # Extract diagonal: for timestep t, take prediction at position t
+        # This gives [batch_size, window_length] where each position corresponds to its timestep
+        indices = torch.arange(window_length, device=x.device)
+        x = x[:, indices, indices]  # [batch_size, window_length]
         
         return x
 
@@ -213,35 +227,33 @@ class StressLSTM(nn.Module):
         # Output dimension (2x if bidirectional)
         lstm_output_dim = hidden_dim * 2 if bidirectional else hidden_dim
         
-        # Enhanced output layer with intermediate layer for better capacity (matching CNN/Transformer)
+        # Enhanced output layer: predict sequence from LSTM outputs
+        # Use all LSTM outputs (not just last hidden state) for sequence prediction
         self.fc1 = nn.Linear(lstm_output_dim, lstm_output_dim // 2)
-        self.fc1_bn = nn.BatchNorm1d(lstm_output_dim // 2)
         self.fc1_dropout = nn.Dropout(dropout * 0.5)
-        self.fc2 = nn.Linear(lstm_output_dim // 2, 1)
+        # Output sequence: one value per timestep
+        self.fc2 = nn.Linear(lstm_output_dim // 2, 1)  # Will be applied per timestep
         
     def forward(self, x):
         # x shape: [batch_size, window_length, input_dim]
         # Input projection
         x = self.input_proj(x)  # [batch_size, window_length, hidden_dim]
         
-        # LSTM forward pass
-        lstm_out, (h_n, c_n) = self.lstm(x)  # [batch_size, window_length, hidden_dim]
+        # LSTM forward pass - get outputs for all timesteps
+        lstm_out, (h_n, c_n) = self.lstm(x)  # lstm_out: [batch_size, window_length, lstm_output_dim]
         
-        # Use the last hidden state
-        # If bidirectional, concatenate forward and backward hidden states
-        if self.lstm.bidirectional:
-            forward_hidden = h_n[-2, :, :]  # Last forward hidden state
-            backward_hidden = h_n[-1, :, :]  # Last backward hidden state
-            final_hidden = torch.cat([forward_hidden, backward_hidden], dim=1)
-        else:
-            final_hidden = h_n[-1, :, :]  # Last hidden state
+        # Apply FC layers to each timestep to predict stress sequence
+        batch_size, window_length, hidden_dim = lstm_out.shape
+        # Reshape to apply FC layers: [batch_size * window_length, hidden_dim]
+        lstm_flat = lstm_out.reshape(batch_size * window_length, hidden_dim)
         
-        # Enhanced output layers with intermediate layer
-        x = self.fc1(final_hidden)  # [batch_size, lstm_output_dim // 2]
-        x = self.fc1_bn(x)  # Batch norm on 1D
+        x = self.fc1(lstm_flat)  # [batch_size * window_length, hidden_dim // 2]
         x = F.relu(x)
         x = self.fc1_dropout(x)
-        x = self.fc2(x)  # [batch_size, 1]
+        x = self.fc2(x)  # [batch_size * window_length, 1]
+        
+        # Reshape back to sequence: [batch_size, window_length]
+        x = x.reshape(batch_size, window_length)
         
         return x
 
@@ -275,11 +287,11 @@ class StressTransformer(nn.Module):
         # CLS token
         self.cls_token = nn.Parameter(torch.randn(1, 1, hidden_dim))
         
-        # Enhanced output layer with intermediate layer for better capacity (matching CNN)
+        # Enhanced output layer: predict sequence from transformer outputs
         self.fc1 = nn.Linear(hidden_dim, hidden_dim // 2)
-        self.fc1_bn = nn.BatchNorm1d(hidden_dim // 2)
         self.fc1_dropout = nn.Dropout(dropout * 0.5)
-        self.fc2 = nn.Linear(hidden_dim // 2, 1)
+        # Output sequence: one value per timestep (excluding CLS token)
+        self.fc2 = nn.Linear(hidden_dim // 2, 1)  # Will be applied per timestep
         
     def forward(self, x):
         # x shape: [batch_size, window_length, input_dim]
@@ -298,15 +310,21 @@ class StressTransformer(nn.Module):
         # Apply transformer
         x = self.transformer(x)  # [batch_size, window_length+1, hidden_dim]
         
-        # Use CLS token for prediction
-        cls_output = x[:, 0, :]  # [batch_size, hidden_dim]
+        # Use all timestep outputs (excluding CLS token) for sequence prediction
+        sequence_output = x[:, 1:, :]  # [batch_size, window_length, hidden_dim]
         
-        # Enhanced output layers with intermediate layer
-        x = self.fc1(cls_output)  # [batch_size, hidden_dim // 2]
-        x = self.fc1_bn(x)  # Batch norm on 1D
+        # Apply FC layers to each timestep
+        batch_size, window_length, hidden_dim = sequence_output.shape
+        # Reshape to apply FC layers: [batch_size * window_length, hidden_dim]
+        seq_flat = sequence_output.reshape(batch_size * window_length, hidden_dim)
+        
+        x = self.fc1(seq_flat)  # [batch_size * window_length, hidden_dim // 2]
         x = F.relu(x)
         x = self.fc1_dropout(x)
-        x = self.fc2(x)  # [batch_size, 1]
+        x = self.fc2(x)  # [batch_size * window_length, 1]
+        
+        # Reshape back to sequence: [batch_size, window_length]
+        x = x.reshape(batch_size, window_length)
         
         return x
 
@@ -513,40 +531,50 @@ class LateFusionModel(nn.Module):
             )
             fusion_input_dim = fusion_dim // 2
         
-        # Output layer
+        # Output layer: predict sequence instead of single value
+        # Need window_length for sequence output
+        self.window_length = window_length
         if fusion_type == "attention":
-            self.fc = nn.Linear(hidden_dim, 1)
+            self.fc = nn.Linear(hidden_dim, 1)  # Will be applied per timestep
         else:
-            self.fc = nn.Linear(fusion_dim // 2, 1)
+            self.fc = nn.Linear(fusion_dim // 2, 1)  # Will be applied per timestep
         
     def forward(self, x_dict: Dict[str, torch.Tensor]):
-        # Encode each modality separately
-        modality_embeddings = []
-        for modality, x in x_dict.items():
-            if modality in self.modality_encoders:
-                # Get embedding from the CNN encoder (returns embedding before FC layer)
-                embedding = self.modality_encoders[modality](x)  # [batch_size, hidden_dim]
-                modality_embeddings.append(embedding)
+        # Encode each modality separately for each timestep
+        batch_size = next(iter(x_dict.values())).size(0)
+        window_length = next(iter(x_dict.values())).size(1)
+        device = next(iter(x_dict.values())).device
         
-        if not modality_embeddings:
-            # Handle case where no modalities are available
-            batch_size = next(iter(x_dict.values())).size(0)
-            device = next(iter(x_dict.values())).device
-            if self.fusion_type == "attention":
-                fused = torch.zeros(batch_size, self.fc.in_features).to(device)
+        # Process each timestep separately, then fuse
+        timestep_outputs = []
+        for t in range(window_length):
+            modality_embeddings = []
+            for modality, x in x_dict.items():
+                if modality in self.modality_encoders:
+                    # Extract timestep t: [batch_size, 2] -> [batch_size, 1, 2]
+                    x_t = x[:, t:t+1, :]  # [batch_size, 1, 2]
+                    # Get embedding for this timestep
+                    embedding = self.modality_encoders[modality](x_t)  # [batch_size, hidden_dim]
+                    modality_embeddings.append(embedding)
+            
+            if modality_embeddings:
+                # Fuse embeddings for this timestep
+                if self.fusion_type == "attention":
+                    fused_t = self.fusion(modality_embeddings)  # [batch_size, hidden_dim]
+                else:
+                    fused_t = torch.cat(modality_embeddings, dim=1)  # [batch_size, num_modalities * hidden_dim]
+                    fused_t = self.fusion(fused_t)  # [batch_size, fusion_dim // 2]
+                
+                # Apply output layer to this timestep
+                output_t = self.fc(fused_t)  # [batch_size, 1]
+                timestep_outputs.append(output_t)
             else:
-                fused = torch.zeros(batch_size, self.fc.in_features).to(device)
-        else:
-            # Fuse embeddings
-            if self.fusion_type == "attention":
-                fused = self.fusion(modality_embeddings)
-            else:
-                # Concatenate embeddings
-                fused = torch.cat(modality_embeddings, dim=1)
-                fused = self.fusion(fused)
+                # Handle case where no modalities are available
+                output_t = torch.zeros(batch_size, 1).to(device)
+                timestep_outputs.append(output_t)
         
-        # Output
-        output = self.fc(fused)
+        # Stack timestep outputs: [batch_size, window_length, 1]
+        output = torch.cat(timestep_outputs, dim=1)  # [batch_size, window_length]
         
         return output
 
@@ -664,20 +692,25 @@ class ModelFactory:
             )
         
         elif model_type == "late_fusion":
-            # Late fusion: 5 signals with separate encoders, then fuse
-            modality_dims = {
-                'heart_rate': 2,  # value + mask
-                'sleep': 2,
-                'cgm': 2,
-                'oxygen_saturation': 2,
-                'respiratory_rate': 2
-            }
+            # Late fusion: Use selected modalities from config
+            # Get selected modalities from config, or use all 5 by default
+            all_modalities = ['heart_rate', 'sleep', 'cgm', 'oxygen_saturation', 'respiratory_rate']
+            selected_modalities = getattr(config, 'selected_modalities', all_modalities)
+            
+            # Validate and filter
+            selected_modalities = [m for m in selected_modalities if m in all_modalities]
+            if not selected_modalities:
+                selected_modalities = all_modalities
+            
+            # Create modality_dims dict for selected modalities only
+            modality_dims = {mod: 2 for mod in selected_modalities}  # value + mask
+            
             return LateFusionModel(
                 modality_dims=modality_dims,
                 hidden_dim=config.hidden_dim // 2,
                 fusion_dim=config.hidden_dim,
                 dropout=config.dropout,
-                window_length=int(config.window_length_min / 5),  # 1 hour = 12 samples
+                window_length=int(config.window_length_min / 5),  # samples at 5-min intervals
                 fusion_type="attention"  # or "concatenate"
             )
         
