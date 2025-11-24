@@ -72,9 +72,10 @@ def evaluate_improved_model(config: PipelineConfig, results_dir: Path):
     else:
         logger.warning("⚠ Label scaler not found, assuming no normalization")
     
-    # Set cache directory in config
+    # Set cache directory in config - use model-specific cache
     base_dir = Path(__file__).parent.parent
-    config.cache_dir = str(base_dir / "data" / "processed" / "preprocessed_cache")
+    model_type = config.model_type if hasattr(config, 'model_type') else 'cnn'
+    config.cache_dir = str(base_dir / "data" / "processed" / f"preprocessed_cache_{model_type}")
     
     # Load data
     logger.info("Loading data...")

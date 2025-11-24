@@ -94,9 +94,10 @@ def load_model_and_data(config: PipelineConfig, results_dir: Path, n_samples: in
             label_scaler = pickle.load(f)
         logger.info("✓ Loaded label scaler")
     
-    # Set cache directory
+    # Set cache directory - use model-specific cache
     base_dir = Path(__file__).parent.parent
-    config.cache_dir = str(base_dir / "data" / "processed" / "preprocessed_cache")
+    model_type = config.model_type if hasattr(config, 'model_type') else 'cnn'
+    config.cache_dir = str(base_dir / "data" / "processed" / f"preprocessed_cache_{model_type}")
     
     # Load data
     logger.info("Loading data...")

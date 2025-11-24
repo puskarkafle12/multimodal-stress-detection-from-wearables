@@ -70,10 +70,13 @@ class PipelineConfig:
     early_stopping_patience: int = 10
     
     # Architecture options
-    model_type: str = "cnn"  # "cnn", "transformer", "multimodal"
+    model_type: str = "cnn"  # "cnn", "transformer", "multimodal", "early_fusion"
+    encoder_type: str = "cnn"  # For early_fusion: "cnn", "lstm", "transformer"
     hidden_dim: int = 128
     num_layers: int = 3
     dropout: float = 0.2
+    bidirectional: bool = False  # For LSTM
+    num_heads: int = 8  # For Transformer
     
     # Evaluation
     stress_threshold: float = 0.5

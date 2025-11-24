@@ -213,8 +213,11 @@ class StressLSTM(nn.Module):
         # Output dimension (2x if bidirectional)
         lstm_output_dim = hidden_dim * 2 if bidirectional else hidden_dim
         
-        # Output layer
-        self.fc = nn.Linear(lstm_output_dim, 1)
+        # Enhanced output layer with intermediate layer for better capacity (matching CNN/Transformer)
+        self.fc1 = nn.Linear(lstm_output_dim, lstm_output_dim // 2)
+        self.fc1_bn = nn.BatchNorm1d(lstm_output_dim // 2)
+        self.fc1_dropout = nn.Dropout(dropout * 0.5)
+        self.fc2 = nn.Linear(lstm_output_dim // 2, 1)
         
     def forward(self, x):
         # x shape: [batch_size, window_length, input_dim]
@@ -233,8 +236,12 @@ class StressLSTM(nn.Module):
         else:
             final_hidden = h_n[-1, :, :]  # Last hidden state
         
-        # Output
-        x = self.fc(final_hidden)  # [batch_size, 1]
+        # Enhanced output layers with intermediate layer
+        x = self.fc1(final_hidden)  # [batch_size, lstm_output_dim // 2]
+        x = self.fc1_bn(x)  # Batch norm on 1D
+        x = F.relu(x)
+        x = self.fc1_dropout(x)
+        x = self.fc2(x)  # [batch_size, 1]
         
         return x
 
@@ -242,7 +249,7 @@ class StressTransformer(nn.Module):
     """Transformer encoder model for stress prediction"""
     
     def __init__(self, input_dim: int, hidden_dim: int = 128, num_layers: int = 3,
-                 num_heads: int = 8, dropout: float = 0.2, window_length: int = 600):
+                 num_heads: int = 8, dropout: float = 0.2, window_length: int = 12):
         super().__init__()
         
         self.input_dim = input_dim
@@ -268,8 +275,11 @@ class StressTransformer(nn.Module):
         # CLS token
         self.cls_token = nn.Parameter(torch.randn(1, 1, hidden_dim))
         
-        # Output layer
-        self.fc = nn.Linear(hidden_dim, 1)
+        # Enhanced output layer with intermediate layer for better capacity (matching CNN)
+        self.fc1 = nn.Linear(hidden_dim, hidden_dim // 2)
+        self.fc1_bn = nn.BatchNorm1d(hidden_dim // 2)
+        self.fc1_dropout = nn.Dropout(dropout * 0.5)
+        self.fc2 = nn.Linear(hidden_dim // 2, 1)
         
     def forward(self, x):
         # x shape: [batch_size, window_length, input_dim]
@@ -291,8 +301,12 @@ class StressTransformer(nn.Module):
         # Use CLS token for prediction
         cls_output = x[:, 0, :]  # [batch_size, hidden_dim]
         
-        # Output
-        x = self.fc(cls_output)  # [batch_size, 1]
+        # Enhanced output layers with intermediate layer
+        x = self.fc1(cls_output)  # [batch_size, hidden_dim // 2]
+        x = self.fc1_bn(x)  # Batch norm on 1D
+        x = F.relu(x)
+        x = self.fc1_dropout(x)
+        x = self.fc2(x)  # [batch_size, 1]
         
         return x
 
@@ -366,21 +380,43 @@ class EarlyFusionModel(nn.Module):
     """Early fusion model: V1+V2+..V5 -> model (as per TA discussion)"""
     
     def __init__(self, input_dim: int, hidden_dim: int = 128, num_layers: int = 3,
-                 dropout: float = 0.2, window_length: int = 12):
+                 dropout: float = 0.2, window_length: int = 12, encoder_type: str = "cnn",
+                 bidirectional: bool = False, num_heads: int = 8):
         super().__init__()
         
         self.input_dim = input_dim  # Should be 5 signals * 2 (value + mask) = 10
         self.hidden_dim = hidden_dim
         self.window_length = window_length
+        self.encoder_type = encoder_type
         
         # Shared encoder (treats all signals as one input)
-        self.encoder = StressCNN(
-            input_dim=input_dim,
-            hidden_dim=hidden_dim,
-            num_layers=num_layers,
-            dropout=dropout,
-            window_length=window_length
-        )
+        if encoder_type == "cnn":
+            self.encoder = StressCNN(
+                input_dim=input_dim,
+                hidden_dim=hidden_dim,
+                num_layers=num_layers,
+                dropout=dropout,
+                window_length=window_length
+            )
+        elif encoder_type == "lstm":
+            self.encoder = StressLSTM(
+                input_dim=input_dim,
+                hidden_dim=hidden_dim,
+                num_layers=num_layers,
+                dropout=dropout,
+                bidirectional=bidirectional
+            )
+        elif encoder_type == "transformer":
+            self.encoder = StressTransformer(
+                input_dim=input_dim,
+                hidden_dim=hidden_dim,
+                num_layers=num_layers,
+                num_heads=num_heads,
+                dropout=dropout,
+                window_length=window_length
+            )
+        else:
+            raise ValueError(f"Unknown encoder_type: {encoder_type}. Must be 'cnn', 'lstm', or 'transformer'")
         
     def forward(self, x):
         # x shape: [batch_size, window_length, input_dim]
@@ -589,30 +625,42 @@ class ModelFactory:
             )
         
         elif model_type == "lstm":
+            bidirectional = getattr(config, 'bidirectional', False)
             return StressLSTM(
                 input_dim=input_dim,
                 hidden_dim=config.hidden_dim,
                 num_layers=config.num_layers,
-                dropout=config.dropout
+                dropout=config.dropout,
+                bidirectional=bidirectional
             )
         
         elif model_type == "transformer":
+            num_heads = getattr(config, 'num_heads', 8)
             return StressTransformer(
                 input_dim=input_dim,
                 hidden_dim=config.hidden_dim,
                 num_layers=config.num_layers,
+                num_heads=num_heads,
                 dropout=config.dropout,
-                window_length=int(config.window_length_min / 5)  # 1 hour = 12 samples at 5-min intervals
+                window_length=int(config.window_length_min / 5)  # samples at 5-min intervals
             )
         
         elif model_type == "early_fusion":
             # Early fusion: all 5 signals concatenated (10 features: 5 signals * 2 channels each)
+            # Support encoder_type: "cnn", "lstm", or "transformer"
+            encoder_type = getattr(config, 'encoder_type', 'cnn')
+            bidirectional = getattr(config, 'bidirectional', False)
+            num_heads = getattr(config, 'num_heads', 8)
+            
             return EarlyFusionModel(
                 input_dim=input_dim,
                 hidden_dim=config.hidden_dim,
                 num_layers=config.num_layers,
                 dropout=config.dropout,
-                window_length=int(config.window_length_min / 5)  # 1 hour = 12 samples
+                window_length=int(config.window_length_min / 5),  # samples at 5-min intervals
+                encoder_type=encoder_type,
+                bidirectional=bidirectional,
+                num_heads=num_heads
             )
         
         elif model_type == "late_fusion":
